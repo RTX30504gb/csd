@@ -110,23 +110,27 @@ def make_on_block(
             confirmed: list[dict] = []
             now = datetime.now(timezone.utc)
             for row in rows:
-                outcome = await _probe_one(provider, row, _block_timestamp)
+                outcome, decoded = await _probe_one(provider, row, _block_timestamp)
                 if outcome is _PROBE_OK:
                     ts = await _safe_block_timestamp(provider, row.creation_block, _block_timestamp)
                     confirmed.append(
                         {
                             "contract_address": row.contract_address,
                             "deployer": row.deployer,
-                            "name": outcome_data["name"],
-                            "symbol": outcome_data["symbol"],
-                            "decimals": outcome_data["decimals"],
-                            "total_supply": outcome_data["total_supply"],
+                            "name": decoded["name"],
+                            "symbol": decoded["symbol"],
+                            "decimals": decoded["decimals"],
+                            "total_supply": decoded["total_supply"],
                             "creation_block": row.creation_block,
                             "creation_timestamp": ts,
                             "detected_at": now,
                         }
                     )
                     row.is_erc20 = True
+                    # Mark "we have probed this" so a future
+                    # listener restart / re-scan doesn't re-probe
+                    # a contract we've already classified.
+                    row.erc20_checked_at = now
                 elif outcome is _PROBE_REVERT:
                     row.erc20_checked_at = now
                 # else _PROBE_TRANSPORT: leave both columns as-is
@@ -161,45 +165,61 @@ class _Outcome:
 
 _PROBE_OK = _Outcome()         # all four eth_calls returned and decoded
 _PROBE_REVERT = _Outcome()     # at least one call reverted: not an ERC-20
-# transport error: no column updates, will retry next tick
+_PROBE_TRANSPORT = _Outcome()  # transport-level error: leave for retry
 
-# Mutable container for the OK case so we can stash decoded data
-# without a separate dataclass. (Module-level so the inner function
-# can populate it without ``nonlocal``.)
-outcome_data: dict = {}
+# Empty-decoded data returned on non-OK outcomes so the caller can
+# always destructure without a None check.
+_EMPTY_DECODED: dict = {
+    "name": None, "symbol": None, "decimals": None, "total_supply": None,
+}
 
 
 async def _probe_one(
     provider: BlockchainProvider,
     deployment: ContractDeployment,
     block_timestamp_fn,
-) -> _Outcome:
-    """Probe a single deployment. Returns _PROBE_OK / _PROBE_REVERT.
+) -> tuple[_Outcome, dict]:
+    """Probe a single deployment.
 
-    On transport error, raises; the caller catches and treats as
-    "leave for retry".
+    Returns ``(outcome, decoded)`` where:
+      - ``outcome is _PROBE_OK`` and ``decoded`` has name/symbol/
+        decimals/total_supply (string truncated to 256 chars,
+        integers intact)
+      - ``outcome is _PROBE_REVERT``: contract is not ERC-20;
+        ``decoded`` is the empty placeholder.
+      - ``outcome is _PROBE_TRANSPORT``: network/RPC error;
+        ``decoded`` is the empty placeholder. The row's columns
+        are left untouched so the next tick retries.
+
+    Does NOT raise on transport errors -- it classifies them
+    and returns. The caller can thus probe a batch and have one
+    transient failure not abort the entire tick.
     """
     addr = deployment.contract_address
     # name()
     try:
         name_raw = await provider.get_eth_call(addr, SELECTOR_NAME)
     except Exception as e:  # noqa: BLE001
-        return _classify_probe_error(e)
+        outcome = _classify_probe_error(e)
+        return outcome, dict(_EMPTY_DECODED)
     # symbol()
     try:
         symbol_raw = await provider.get_eth_call(addr, SELECTOR_SYMBOL)
     except Exception as e:  # noqa: BLE001
-        return _classify_probe_error(e)
+        outcome = _classify_probe_error(e)
+        return outcome, dict(_EMPTY_DECODED)
     # decimals()
     try:
         decimals_raw = await provider.get_eth_call(addr, SELECTOR_DECIMALS)
     except Exception as e:  # noqa: BLE001
-        return _classify_probe_error(e)
+        outcome = _classify_probe_error(e)
+        return outcome, dict(_EMPTY_DECODED)
     # totalSupply()
     try:
         total_supply_raw = await provider.get_eth_call(addr, SELECTOR_TOTAL_SUPPLY)
     except Exception as e:  # noqa: BLE001
-        return _classify_probe_error(e)
+        outcome = _classify_probe_error(e)
+        return outcome, dict(_EMPTY_DECODED)
 
     try:
         name = _decode_string(name_raw)
@@ -207,28 +227,23 @@ async def _probe_one(
         decimals = _decode_uint8(decimals_raw)
         total_supply = _decode_uint256(total_supply_raw)
     except DecodeError:
-        return _PROBE_REVERT
-    except Exception:  # noqa: BLE001
-        # Truly unexpected decode failure: be conservative and
-        # don't mark checked_at -- try again next tick.
-        raise
+        return _PROBE_REVERT, dict(_EMPTY_DECODED)
 
     # Sanity: decimals must be 0..255. If decimals is None (empty
     # response from a non-contract), the contract is definitely
     # not ERC-20.
     if decimals is None or decimals > 255:
-        return _PROBE_REVERT
+        return _PROBE_REVERT, dict(_EMPTY_DECODED)
     if total_supply is None:
-        return _PROBE_REVERT
+        return _PROBE_REVERT, dict(_EMPTY_DECODED)
 
-    outcome_data.clear()
-    outcome_data.update(
-        name=_truncate(name) if name is not None else None,
-        symbol=_truncate(symbol) if symbol is not None else None,
-        decimals=decimals,
-        total_supply=total_supply,
-    )
-    return _PROBE_OK
+    decoded = {
+        "name": _truncate(name) if name is not None else None,
+        "symbol": _truncate(symbol) if symbol is not None else None,
+        "decimals": decimals,
+        "total_supply": total_supply,
+    }
+    return _PROBE_OK, decoded
 
 
 def _classify_probe_error(e: Exception) -> _Outcome:
@@ -248,7 +263,9 @@ def _classify_probe_error(e: Exception) -> _Outcome:
     if name in revert_like or "revert" in str(e).lower():
         return _PROBE_REVERT
     # Anything else (timeout, RPC error, aiohttp error) is transient.
-    raise e
+    # We do NOT re-raise: the caller batches multiple probes in one
+    # tick and a single transport failure must not abort the rest.
+    return _PROBE_TRANSPORT
 
 
 async def _safe_block_timestamp(provider, block_number, ts_fn):

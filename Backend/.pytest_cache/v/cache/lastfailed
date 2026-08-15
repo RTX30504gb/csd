@@ -1,5 +1,1 @@
-{
-  "tests/test_tokens.py::TestDetectorSuccess::test_standard_erc20_recorded": true,
-  "tests/test_tokens.py::TestDetectorFailures::test_transport_error_leaves_unchecked": true,
-  "tests/test_tokens.py::TestDetectorFailures::test_batch_size_limits_probes": true
-}
+{}

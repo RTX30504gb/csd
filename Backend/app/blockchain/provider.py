@@ -154,7 +154,17 @@ class HttpRpcProvider(BlockchainProvider):
         }
 
     async def get_eth_call(self, to: str, data: str) -> bytes:
-        result_hex = await self._w3.eth.call({"to": to, "data": data})
+        # web3.py v7 strictly requires EIP-55 checksum addresses for
+        # eth_call. We store all addresses lower-case in the DB per
+        # spec, so re-checksum before the call. Falls back to the
+        # raw input on ``to_checksum_address`` failure (invalid
+        # length, non-hex) so the detector can surface the
+        # underlying error.
+        try:
+            to_checksum = self._w3.to_checksum_address(to)
+        except (ValueError, TypeError):
+            to_checksum = to
+        result_hex = await self._w3.eth.call({"to": to_checksum, "data": data})
         # AsyncWeb3 returns HexBytes; coerce to bytes so the detector
         # can ABI-decode without depending on web3 types.
         return bytes(result_hex)

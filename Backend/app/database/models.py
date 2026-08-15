@@ -6,7 +6,7 @@ Resume from the saved block after a restart.").
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -112,8 +112,13 @@ class Token(Base):
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     symbol: Mapped[str | None] = mapped_column(Text, nullable=True)
     decimals: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``Numeric(78)`` is uint256-sized: max value is 1.16e77, which
+    # is the full EVM uint256 range. We deliberately do NOT use
+    # BigInteger (int8, max 9.2e18) because many real ERC-20s
+    # (meme coins, rebasing tokens) issue >1e18 in smallest units.
+    # SQLAlchemy Decimal on the wire, ``int`` in Python.
     total_supply: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True
+        Numeric(78, 0), nullable=True
     )  # raw integer in smallest unit
     creation_block: Mapped[int] = mapped_column(
         BigInteger, index=True, nullable=False
