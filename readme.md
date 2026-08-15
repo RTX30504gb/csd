@@ -11,8 +11,8 @@ with the evidence that produced it.
 ## Status
 
 - [x] **Phase 1** - Base RPC connection (HTTP)
-- [ ] **Phase 2** - Block listener (HTTP polling, DB checkpoint)  <- *current*
-- [ ] Phase 3 - Contract deployment detection
+- [x] **Phase 2** - Block listener (HTTP polling, DB checkpoint)  <- *current*
+- [x] Phase 3 - Contract deployment detection
 - [ ] Phase 4 - ERC-20 detection
 - [ ] Phase 5 - Token database
 - [ ] Phase 6 - DEX / liquidity discovery
