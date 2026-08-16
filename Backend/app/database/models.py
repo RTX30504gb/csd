@@ -131,3 +131,61 @@ class Token(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    # Phase 5: timestamp of the last liquidity-pool discovery sweep
+    # for this token. Same NULL-means-unprobed convention as
+    # ``ContractDeployment.erc20_checked_at`` in Phase 4: set on
+    # both "found a pool" and "checked, found nothing" so we don't
+    # re-query every block forever; left NULL on transport errors
+    # so the sweep retries on a later tick.
+    liquidity_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class LiquidityPool(Base):
+    """A discovered liquidity pool for a token (spec sec.8).
+
+    Populated by the Phase 5 detector, which probes the well-known
+    Base DEX factories (Uniswap V2, Uniswap V3) for a pool pairing
+    each confirmed ERC-20 against a short list of major paired
+    assets (WETH, USDC). One token can have several rows here --
+    e.g. a V2 pool against WETH *and* a V3 0.3% pool against USDC.
+
+    Reserves are only populated for V2-style pools, where
+    ``getReserves()`` gives a direct, unambiguous snapshot. V3 pools
+    use concentrated liquidity (a single reserve number is
+    meaningless without the active tick range), so ``reserve_token``
+    / ``reserve_pair`` stay NULL for V3 rows -- depth analysis for
+    V3 is deferred to Phase 9 (Liquidity Monitoring) / Phase 10.
+    """
+
+    __tablename__ = "liquidity_pools"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_address: Mapped[str] = mapped_column(
+        String(42),
+        ForeignKey("tokens.contract_address", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    pool_address: Mapped[str] = mapped_column(
+        String(42), unique=True, index=True, nullable=False
+    )
+    dex: Mapped[str] = mapped_column(String(32), nullable=False)  # "uniswap_v2" | "uniswap_v3"
+    pair_asset: Mapped[str] = mapped_column(String(42), nullable=False)
+    # Uniswap V3 fee tier in hundredths of a bip (500/3000/10000).
+    # NULL for V2 pools, which have a single fixed 0.3% fee baked
+    # into the pair contract rather than a per-pool parameter.
+    fee_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Raw on-chain reserves at discovery time, smallest-unit integers
+    # (same Numeric(78,0) rationale as Token.total_supply -- must
+    # hold the full uint112/uint256 range). V2 only; see class
+    # docstring.
+    reserve_token: Mapped[int | None] = mapped_column(Numeric(78, 0), nullable=True)
+    reserve_pair: Mapped[int | None] = mapped_column(Numeric(78, 0), nullable=True)
+    discovered_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    discovered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

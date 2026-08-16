@@ -11,6 +11,11 @@ un-flagged deployment for name/symbol/decimals/totalSupply and
 records confirmed tokens in the ``tokens`` table. Adds ``/tokens``
 and ``/tokens/{address}`` endpoints so the frontend (and integration
 tests) can read what the detector has classified.
+
+Phase 5: also wires the liquidity discovery detector, which probes
+Uniswap V2/V3 on Base for pools pairing each confirmed token against
+WETH/USDC and records them in ``liquidity_pools``. Adds
+``/tokens/{address}/pools``.
 """
 from contextlib import asynccontextmanager
 
@@ -21,8 +26,9 @@ from app.blockchain.listener import BlockListener
 from app.blockchain.provider import HttpRpcProvider
 from app.config import get_settings
 from app.database.database import AsyncSessionLocal, engine
-from app.database.models import Base, ContractDeployment, Token
+from app.database.models import Base, ContractDeployment, LiquidityPool, Token
 from app.discovery.deployments import make_on_block
+from app.discovery.liquidity import make_on_block as make_liquidity_on_block
 from app.discovery.tokens import make_on_block as make_token_on_block
 
 
@@ -45,6 +51,13 @@ async def lifespan(app: FastAPI):
     # DB by the time the token detector picks it up.
     listener.register_on_block(
         make_token_on_block(provider=provider, session_factory=AsyncSessionLocal)
+    )
+    # Phase 5: liquidity pool discovery. Runs after the token
+    # detector in the same tick (registration order), so a token
+    # confirmed in this block is already in `tokens` by the time
+    # the liquidity sweep picks it up.
+    listener.register_on_block(
+        make_liquidity_on_block(provider=provider, session_factory=AsyncSessionLocal)
     )
     await listener.start()
 
@@ -163,3 +176,52 @@ async def token_detail(address: str) -> dict:
             )
         ).scalars().first()
     return _token_to_dict(token, deployment)
+
+
+def _pool_to_dict(p: LiquidityPool) -> dict:
+    return {
+        "pool_address": p.pool_address,
+        "dex": p.dex,
+        "pair_asset": p.pair_asset,
+        "fee_tier": p.fee_tier,
+        "reserve_token": str(int(p.reserve_token)) if p.reserve_token is not None else None,
+        "reserve_pair": str(int(p.reserve_pair)) if p.reserve_pair is not None else None,
+        "discovered_block": p.discovered_block,
+        "discovered_at": p.discovered_at.isoformat() if p.discovered_at else None,
+    }
+
+
+@app.get("/tokens/{address}/pools")
+async def token_pools(address: str) -> dict:
+    """Phase 5: liquidity pools discovered for a single token.
+
+    Returns an empty list (not 404) when the token exists but has no
+    known pools yet -- "checked, found nothing" and "not checked
+    yet" are both legitimate states while discovery is in progress.
+    404 only when the token itself is unknown.
+    """
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid EVM address: {address!r}",
+        )
+    async with AsyncSessionLocal() as session:
+        token = (
+            await session.execute(select(Token).where(Token.contract_address == addr))
+        ).scalars().first()
+        if token is None:
+            raise HTTPException(status_code=404, detail=f"token not found: {addr}")
+        pools = (
+            await session.execute(
+                select(LiquidityPool).where(LiquidityPool.token_address == addr)
+            )
+        ).scalars().all()
+    return {
+        "token_address": addr,
+        "liquidity_checked_at": (
+            token.liquidity_checked_at.isoformat() if token.liquidity_checked_at else None
+        ),
+        "count": len(pools),
+        "pools": [_pool_to_dict(p) for p in pools],
+    }
