@@ -2,6 +2,11 @@
   "tests/test_deployments.py::test_deployments_idempotent_on_replay",
   "tests/test_deployments.py::test_deployments_records_only_creations",
   "tests/test_deployments.py::test_deployments_skips_failed_tx",
+  "tests/test_tokens.py::TestBytes32Fallback::test_end_to_end_bytes32",
+  "tests/test_tokens.py::TestDecoders::test_decode_bytes32_empty_returns_none",
+  "tests/test_tokens.py::TestDecoders::test_decode_bytes32_full",
+  "tests/test_tokens.py::TestDecoders::test_decode_bytes32_invalid_utf8_raises",
+  "tests/test_tokens.py::TestDecoders::test_decode_bytes32_padded",
   "tests/test_tokens.py::TestDecoders::test_decode_string_empty_returns_none",
   "tests/test_tokens.py::TestDecoders::test_decode_string_hello",
   "tests/test_tokens.py::TestDecoders::test_decode_string_too_short_raises",
@@ -15,7 +20,11 @@
   "tests/test_tokens.py::TestDetectorFailures::test_revert_on_decimals_also_marks_not_erc20",
   "tests/test_tokens.py::TestDetectorFailures::test_revert_on_name_marks_checked_not_erc20",
   "tests/test_tokens.py::TestDetectorFailures::test_transport_error_leaves_unchecked",
+  "tests/test_tokens.py::TestDetectorSuccess::test_erc20_with_bytes32_name_and_symbol",
   "tests/test_tokens.py::TestDetectorSuccess::test_erc20_with_empty_name_is_recorded",
   "tests/test_tokens.py::TestDetectorSuccess::test_idempotent_on_replay",
-  "tests/test_tokens.py::TestDetectorSuccess::test_standard_erc20_recorded"
+  "tests/test_tokens.py::TestDetectorSuccess::test_standard_erc20_recorded",
+  "tests/test_tokens.py::TestTokenDetailEndpoint::test_get_token_by_address",
+  "tests/test_tokens.py::TestTokenDetailEndpoint::test_get_token_invalid_address_400",
+  "tests/test_tokens.py::TestTokenDetailEndpoint::test_get_token_not_found_404"
 ]

@@ -284,18 +284,43 @@ class DecodeError(Exception):
 
 
 def _decode_string(data: bytes) -> str | None:
-    """Decode an ABI-encoded ``string`` return value.
+    """Decode an ABI-encoded ``string`` or legacy ``bytes32`` return.
 
-    Layout (always, per ABI):
+    The ERC-20 spec says ``name()`` and ``symbol()`` return ``string``,
+    but a non-trivial fraction of deployed tokens (most famously USDT
+    on Ethereum, and many forks on Base) still implement them as
+    ``bytes32`` for gas savings. We accept both layouts so we don't
+    mis-classify well-known tokens as "not ERC-20".
+
+    Layout 1 — ``string``:
         [0..32)  : offset to string data (always 0x20)
         [32..64) : length N (uint256)
         [64..)   : utf-8 bytes, padded to 32-byte boundary
 
-    Returns None for the empty string (N == 0), since some
-    contracts legitimately have no name/symbol.
+    Layout 2 — ``bytes32`` (legacy):
+        Exactly 32 bytes. Right-padded with ``\\x00``; we strip the
+        padding before decoding as utf-8. If the result is not valid
+        utf-8 we treat it as non-ERC-20.
+
+    Returns None for the empty string (N == 0) and for an
+    all-zero bytes32, since some contracts legitimately have no
+    name/symbol.
     """
     if not data:
         raise DecodeError("empty response")
+    # Layout 2: bytes32 — accept before the length check so a
+    # 32-byte response is never mis-decoded as "length=0 string".
+    if len(data) == 32:
+        stripped = data.rstrip(b"\x00")
+        if not stripped:
+            return None
+        if len(stripped) > MAX_STRING_LEN:
+            raise DecodeError(f"bytes32 too large: {len(stripped)}")
+        try:
+            return stripped.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise DecodeError(f"bytes32 utf-8 decode: {e}")
+    # Layout 1: string
     if len(data) < 64:
         raise DecodeError(f"response too short: {len(data)}")
     offset = int.from_bytes(data[0:32], "big")

@@ -13,6 +13,7 @@ Run:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -162,13 +163,37 @@ class TestDecoders:
         assert _decode_string(_enc_string("")) is None
 
     def test_decode_string_too_short_raises(self):
+        # 16 bytes is neither a valid string (min 64) nor a bytes32
+        # (needs exactly 32). Must raise so the contract is marked
+        # not-ERC-20 instead of being silently dropped.
         with pytest.raises(DecodeError):
-            _decode_string(b"\x00" * 32)
+            _decode_string(b"\x00" * 16)
 
     def test_decode_string_wrong_offset_raises(self):
         data = (16).to_bytes(32, "big") + (0).to_bytes(32, "big")
         with pytest.raises(DecodeError):
             _decode_string(data)
+
+    def test_decode_bytes32_padded(self):
+        # USDT-style: "USDT" right-padded with NULs to 32 bytes.
+        raw = b"USDT" + b"\x00" * 28
+        assert _decode_string(raw) == "USDT"
+
+    def test_decode_bytes32_full(self):
+        # 32 bytes, no trailing NULs.
+        raw = b"A" * 32
+        assert _decode_string(raw) == "A" * 32
+
+    def test_decode_bytes32_empty_returns_none(self):
+        # All-zero bytes32 -> None (same semantics as empty string).
+        assert _decode_string(b"\x00" * 32) is None
+
+    def test_decode_bytes32_invalid_utf8_raises(self):
+        # Random non-utf8 bytes in a 32-byte slot — must raise so
+        # we don't silently store garbage in the DB.
+        raw = b"\xff" * 32
+        with pytest.raises(DecodeError):
+            _decode_string(raw)
 
     def test_decode_uint8(self):
         assert _decode_uint8(_enc_uint8(18)) == 18
@@ -238,6 +263,31 @@ class TestDetectorSuccess:
             t = (await session.execute(select(Token))).scalar_one()
             assert t.name is None        # empty -> None
             assert t.symbol == "XXX"
+            assert t.decimals == 6
+
+    @pytest.mark.asyncio
+    async def test_erc20_with_bytes32_name_and_symbol(self, session_factory):
+        """USDT-style tokens return bytes32 for name/symbol.
+
+        The detector must accept both layouts and record the token.
+        """
+        factory, schema = session_factory
+        addr = "0x" + "cc" * 20
+        await _seed_deployment(factory, schema, address=addr)
+        provider = StubProvider([
+            b"Tether USD" + b"\x00" * 22,    # bytes32 name (10 + 22 = 32)
+            b"USDT" + b"\x00" * 28,         # bytes32 symbol (4 + 28 = 32)
+            _enc_uint8(6),
+            _enc_uint256(10**12),
+        ])
+        on_block = make_on_block(provider, factory)
+        await on_block({"number": 1, "timestamp": 1_700_000_000})
+
+        async with factory() as session:
+            await session.execute(text(f'SET search_path TO "{schema}"'))
+            t = (await session.execute(select(Token))).scalar_one()
+            assert t.name == "Tether USD"
+            assert t.symbol == "USDT"
             assert t.decimals == 6
 
     @pytest.mark.asyncio
@@ -373,3 +423,167 @@ class TestDetectorFailures:
                 select(ContractDeployment).where(ContractDeployment.erc20_checked_at.is_(None))
             )).scalars().all()
             assert len(pending) == 3        # 3 still to probe
+
+
+# =========================================================================
+# Phase 4 close-out: bytes32 fallback + GET /tokens/{address}
+# =========================================================================
+class TestBytes32Fallback:
+    """USDT-style contracts return ``bytes32`` for name/symbol rather
+    than ``string``. The detector must accept both layouts so we
+    don't mis-classify well-known tokens as non-ERC-20."""
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_bytes32(self, session_factory):
+        factory, schema = session_factory
+        addr = "0x" + "cc" * 20
+        await _seed_deployment(factory, schema, address=addr)
+        provider = StubProvider([
+            b"Tether USD" + b"\x00" * 22,    # bytes32 name (10 + 22 = 32)
+            b"USDT" + b"\x00" * 28,         # bytes32 symbol (4 + 28 = 32)
+            _enc_uint8(6),
+            _enc_uint256(10**12),
+        ])
+        on_block = make_on_block(provider, factory)
+        await on_block({"number": 1, "timestamp": 1_700_000_000})
+
+        async with factory() as session:
+            await session.execute(text(f'SET search_path TO "{schema}"'))
+            t = (await session.execute(select(Token))).scalar_one()
+            assert t.name == "Tether USD"
+            assert t.symbol == "USDT"
+            assert t.decimals == 6
+
+
+class TestTokenDetailEndpoint:
+    """The HTTP endpoint backing the dashboard's Token Page.
+
+    ``GET /tokens/{address}`` must return the full record or 404.
+    Address matching is case-insensitive so callers can paste
+    EIP-55 checksummed addresses.
+
+    Implementation note: we build a fresh ASGI app per test whose
+    DB engine has its connection-level ``search_path`` pinned to
+    the per-test schema. This isolates the HTTP tests from each
+    other (parallel-safe) without touching the public schema.
+    """
+
+    @pytest_asyncio.fixture
+    async def http_client(self, session_factory, monkeypatch):
+        from httpx import ASGITransport, AsyncClient
+        from sqlalchemy import event
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app import main as main_mod
+        from app.database import database as db_mod
+
+        factory, schema = session_factory
+        settings = get_settings_safe()
+
+        # Build a fresh engine that pins search_path on every
+        # connection (BEGIN or otherwise).
+        test_engine = create_async_engine(settings.database_url, echo=False)
+
+        @event.listens_for(test_engine.sync_engine, "connect")
+        def _set_search_path(dbapi_conn, _record):
+            cur = dbapi_conn.cursor()
+            try:
+                cur.execute(f'SET search_path TO "{schema}"')
+            finally:
+                cur.close()
+
+        # Create the tables once on the test engine / schema.
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        test_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+        monkeypatch.setattr(db_mod, "engine", test_engine, raising=True)
+        monkeypatch.setattr(db_mod, "AsyncSessionLocal", test_factory, raising=True)
+        monkeypatch.setattr(main_mod, "engine", test_engine, raising=True)
+        monkeypatch.setattr(main_mod, "AsyncSessionLocal", test_factory, raising=True)
+
+        # Stub the provider so the lifespan handler (which would
+        # otherwise spin up a real listener hitting the network)
+        # stays a no-op.
+        stub = StubProvider([])
+        monkeypatch.setattr(main_mod, "HttpRpcProvider", lambda: stub, raising=True)
+        # Short-circuit the lifespan so the listener never starts.
+        monkeypatch.setattr(main_mod, "lifespan", _noop_lifespan, raising=True)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=main_mod.app),
+            base_url="http://test",
+        ) as c:
+            yield c, factory, schema
+
+        await test_engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_get_token_by_address(self, http_client):
+        client, factory, schema = http_client
+        addr = "0x" + "ee" * 20
+        async with factory() as session:
+            await session.execute(text(f'SET search_path TO "{schema}"'))
+            session.add(ContractDeployment(
+                contract_address=addr,
+                deployer="0x" + "22" * 20,
+                creation_tx="0x" + addr[2:].rjust(64, "0"),
+                creation_block=99,
+                is_erc20=True,
+                erc20_checked_at=datetime.now(timezone.utc),
+            ))
+            session.add(Token(
+                contract_address=addr,
+                deployer="0x" + "22" * 20,
+                name="MyToken",
+                symbol="MTK",
+                decimals=18,
+                total_supply=1_000_000,
+                creation_block=99,
+                creation_timestamp=datetime.now(timezone.utc),
+            ))
+            await session.commit()
+
+        # Lower-case lookup
+        r = await client.get(f"/tokens/{addr.lower()}")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["contract_address"] == addr.lower()
+        assert body["name"] == "MyToken"
+        assert body["symbol"] == "MTK"
+        assert body["decimals"] == 18
+        assert body["total_supply"] == "1000000"
+        assert "deployment" in body
+        assert body["deployment"]["is_erc20"] is True
+        assert body["deployment"]["creation_tx"] == (
+            "0x" + addr[2:].rjust(64, "0")
+        )
+
+        # EIP-55 / mixed-case lookup must also resolve (we
+        # lower-case the path param before the DB query).
+        r2 = await client.get(f"/tokens/{addr.upper()}")
+        assert r2.status_code == 200
+        assert r2.json()["contract_address"] == addr.lower()
+
+    @pytest.mark.asyncio
+    async def test_get_token_not_found_404(self, http_client):
+        client, _, _ = http_client
+        r = await client.get("/tokens/0x" + "ff" * 20)
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_token_invalid_address_400(self, http_client):
+        client, _, _ = http_client
+        r = await client.get("/tokens/not-an-address")
+        assert r.status_code == 400
+
+
+async def _noop_lifespan(app):
+    """Lifespan replacement that skips the real listener boot.
+
+    The HTTP tests use a stub provider; spinning up the real
+    BlockListener would either hang on get_latest_block_number
+    or pollute the per-test schema with listener checkpoint
+    rows.
+    """
+    yield
