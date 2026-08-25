@@ -26,22 +26,39 @@ Phase 10: also wires the contract bytecode risk detector, which
 scans each token's runtime bytecode for known dangerous function
 selectors (mint, blacklist, pause, tax/limit setters, upgrade
 hooks) and checks ownership status. Adds ``/tokens/{address}/risk``.
+
+Phase 11: also wires the wallet-graph detector, which builds the
+edge list ``(deployer -> token, token -> peer token, token -> pool,
+token -> transfer_recipient)`` from the data already in the DB plus
+one ``eth_getLogs`` call per analyzed token. Adds
+``/wallets/{address}``, ``/wallets/{address}/relationships``, and
+``/tokens/{address}/wallets`` endpoints.
 """
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.blockchain.listener import BlockListener
 from app.blockchain.provider import HttpRpcProvider
 from app.config import get_settings
 from app.database.database import AsyncSessionLocal, engine
-from app.database.models import Base, ContractDeployment, ContractRiskFlags, LiquidityEvent, LiquidityPool, Token
+from app.database.models import (
+    Base,
+    ContractDeployment,
+    ContractRiskFlags,
+    LiquidityEvent,
+    LiquidityPool,
+    Token,
+    Wallet,
+    WalletRelationship,
+)
 from app.discovery.contract_risk import make_on_block as make_contract_risk_on_block
 from app.discovery.deployments import make_on_block
 from app.discovery.liquidity import make_on_block as make_liquidity_on_block
 from app.discovery.monitor import make_on_block as make_monitor_on_block
 from app.discovery.tokens import make_on_block as make_token_on_block
+from app.discovery.wallet_graph import make_on_block as make_wallet_graph_on_block
 
 
 @asynccontextmanager
@@ -86,6 +103,15 @@ async def lifespan(app: FastAPI):
     # discovery/monitor.
     listener.register_on_block(
         make_contract_risk_on_block(provider=provider, session_factory=AsyncSessionLocal)
+    )
+    # Phase 11: wallet-graph analysis. Runs after Phase 4 (it only
+    # considers confirmed tokens) and after Phase 5/6 (it reads from
+    # ``liquidity_pools`` for the operates_pool edge). Registration
+    # order doesn't strictly matter -- the detector re-queries the
+    # DB inside its tick -- but running it last keeps the per-tick
+    # RPC budget focused on lighter work first.
+    listener.register_on_block(
+        make_wallet_graph_on_block(provider=provider, session_factory=AsyncSessionLocal)
     )
     await listener.start()
 
@@ -355,3 +381,178 @@ async def token_risk(address: str) -> dict:
     if flags is None:
         return {"token_address": addr, "analyzed": False}
     return {"token_address": addr, "analyzed": True, **_risk_flags_to_dict(flags)}
+
+
+def _wallet_to_dict(w: Wallet) -> dict:
+    return {
+        "address": w.address,
+        "tokens_deployed": w.tokens_deployed,
+        "tokens_as_pool": w.tokens_as_pool,
+        "tokens_as_transfer": w.tokens_as_transfer,
+        "first_seen_block": w.first_seen_block,
+        "last_seen_block": w.last_seen_block,
+        "first_seen_at": w.first_seen_at.isoformat() if w.first_seen_at else None,
+        "last_seen_at": w.last_seen_at.isoformat() if w.last_seen_at else None,
+    }
+
+
+def _edge_to_dict(e: WalletRelationship, *, direction: str) -> dict:
+    """Shape one WalletRelationship for JSON.
+
+    ``direction`` is "outgoing" (a == address) or "incoming"
+    (b == address). The endpoint always uses the queried address as
+    the focal point; the raw ``a``/``b`` columns are preserved so
+    the consumer can recover the global edge direction without
+    ambiguity.
+    """
+    return {
+        "edge_id": e.id,
+        "a": e.a,
+        "b": e.b,
+        "kind": e.kind,
+        "direction": direction,
+        "weight": e.weight,
+        "first_seen_block": e.first_seen_block,
+        "last_seen_block": e.last_seen_block,
+        "evidence": e.evidence_json,
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+    }
+
+
+@app.get("/wallets/{address}")
+async def wallet_detail(address: str) -> dict:
+    """Phase 11: counters and first/last-seen for a single address.
+
+    Returns 404 only when the address has never been observed by
+    any detector. "Observed" currently means: appears as a
+    deployer, a token contract, a pool, or an ERC-20 Transfer
+    recipient during a Phase 11 sweep.
+    """
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid EVM address: {address!r}",
+        )
+    async with AsyncSessionLocal() as session:
+        wallet = (
+            await session.execute(select(Wallet).where(Wallet.address == addr))
+        ).scalars().first()
+    if wallet is None:
+        raise HTTPException(status_code=404, detail=f"wallet not found: {addr}")
+    return _wallet_to_dict(wallet)
+
+
+@app.get("/wallets/{address}/relationships")
+async def wallet_relationships(
+    address: str,
+    limit: int = 100,
+    kind: str | None = None,
+) -> dict:
+    """Phase 11: incoming + outgoing edges for one address.
+
+    ``limit`` caps each direction (outgoing/incoming) at the given
+    value, capped to 500 to keep responses bounded. ``kind`` filters
+    to a single edge kind (``funds_token`` / ``co_deployed`` /
+    ``operates_pool`` / ``transfer_recipient``).
+
+    Returns 404 only when the address is unknown to the wallet
+    graph. A known address with zero edges returns an empty list --
+    a wallet that just transacted once is still a wallet.
+    """
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid EVM address: {address!r}",
+        )
+    limit = max(1, min(limit, 500))
+
+    base_out = select(WalletRelationship).where(WalletRelationship.a == addr)
+    base_in = select(WalletRelationship).where(WalletRelationship.b == addr)
+    if kind is not None:
+        base_out = base_out.where(WalletRelationship.kind == kind)
+        base_in = base_in.where(WalletRelationship.kind == kind)
+
+    async with AsyncSessionLocal() as session:
+        wallet = (
+            await session.execute(select(Wallet).where(Wallet.address == addr))
+        ).scalars().first()
+        if wallet is None:
+            raise HTTPException(status_code=404, detail=f"wallet not found: {addr}")
+
+        outgoing = (
+            await session.execute(
+                base_out.order_by(WalletRelationship.weight.desc()).limit(limit)
+            )
+        ).scalars().all()
+        incoming = (
+            await session.execute(
+                base_in.order_by(WalletRelationship.weight.desc()).limit(limit)
+            )
+        ).scalars().all()
+
+    return {
+        "address": addr,
+        "outgoing_count": len(outgoing),
+        "incoming_count": len(incoming),
+        "outgoing": [_edge_to_dict(e, direction="outgoing") for e in outgoing],
+        "incoming": [_edge_to_dict(e, direction="incoming") for e in incoming],
+    }
+
+
+@app.get("/tokens/{address}/wallets")
+async def token_wallets(address: str) -> dict:
+    """Phase 11: wallets related to a token.
+
+    Returns edges where the token is either endpoint (``a`` or
+    ``b``). This is the token-centric counterpart to
+    ``/wallets/{address}/relationships`` -- useful for the
+    dashboard's "who is connected to this token?" view without
+    forcing the frontend to also query by the deployer/pool
+    addresses.
+    """
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid EVM address: {address!r}",
+        )
+    async with AsyncSessionLocal() as session:
+        token = (
+            await session.execute(select(Token).where(Token.contract_address == addr))
+        ).scalars().first()
+        if token is None:
+            raise HTTPException(status_code=404, detail=f"token not found: {addr}")
+        edges = (
+            await session.execute(
+                select(WalletRelationship)
+                .where(
+                    or_(
+                        WalletRelationship.a == addr,
+                        WalletRelationship.b == addr,
+                    )
+                )
+                .order_by(WalletRelationship.kind.asc(), WalletRelationship.weight.desc())
+            )
+        ).scalars().all()
+    return {
+        "token_address": addr,
+        "wallet_graph_analyzed_at": (
+            token.wallet_graph_analyzed_at.isoformat()
+            if token.wallet_graph_analyzed_at else None
+        ),
+        "count": len(edges),
+        "relationships": [
+            {
+                "a": e.a,
+                "b": e.b,
+                "kind": e.kind,
+                "weight": e.weight,
+                "first_seen_block": e.first_seen_block,
+                "last_seen_block": e.last_seen_block,
+                "evidence": e.evidence_json,
+            }
+            for e in edges
+        ],
+    }

@@ -1,7 +1,10 @@
 """Discovery layer: extract on-chain entities from raw blocks.
 
-Phase 3 currently contains only the contract-deployment detector. ERC-20
-detection (Phase 4), liquidity discovery (Phase 6) and later detectors
-will live here as additional ``on_block`` callbacks.
+Phase 3: contract-deployment detector.
+Phase 4: ERC-20 detector.
+Phase 5: liquidity pool discovery.
+Phase 6: liquidity pool monitoring.
+Phase 10: contract bytecode risk analysis.
+Phase 11: wallet relationship graph builder.
 """
 

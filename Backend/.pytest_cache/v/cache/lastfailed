@@ -1,1 +1,3 @@
-{}
+{
+  "tests/test_wallet_graph.py::TestWalletBookkeeping::test_first_seen_block_is_earliest": true
+}

@@ -6,7 +6,7 @@ Resume from the saved block after a restart.").
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -143,6 +143,13 @@ class Token(Base):
     # Phase 10: timestamp of the last contract-bytecode risk scan.
     # Same NULL-means-unprobed convention as the other detectors.
     contract_analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Phase 11: timestamp of the last wallet-graph analysis. Same
+    # NULL-means-unprobed convention; the detector sets it whether
+    # or not any edges were discovered (so a token with no inbound
+    # transfers in the window is not re-queried every block).
+    wallet_graph_analyzed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -324,6 +331,113 @@ class ContractRiskFlags(Base):
     bytecode_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     analyzed_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
     analyzed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class Wallet(Base):
+    """An EVM address we have observed and want to track (spec sec.15).
+
+    Phase 11 inserts one row per distinct address the wallet-graph
+    detector encounters, regardless of role. Roles are recorded as
+    cheap, incrementable counters -- not a label -- because an
+    address can be both a deployer and a transfer recipient.
+
+    Specifically:
+      - ``tokens_deployed``    : tokens this address created
+      - ``tokens_as_pool``     : pools whose address this is
+      - ``tokens_as_transfer`` : tokens whose Transfer events
+                                 name this address as ``from`` or
+                                 ``to`` (rough "interacted with"
+                                 count -- we do NOT track which side)
+
+    The Phase 11 detector does NOT attempt a heuristic
+    ``label in {EOA, contract, pool, router, ...}``; that requires
+    bytecode + bytecode-of-children walks and is left to a later
+    phase (Phase 13 classification work, where these counters
+    would feed the inference).
+    """
+
+    __tablename__ = "wallets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    address: Mapped[str] = mapped_column(String(42), unique=True, index=True, nullable=False)
+    tokens_deployed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_as_pool: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_as_transfer: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_seen_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_seen_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class WalletRelationship(Base):
+    """A directed edge between two addresses (spec sec.15).
+
+    The graph is intentionally small and explicit. We do NOT run
+    a graph-ML algorithm here -- we expose raw edges and let the
+    consumer (a future cluster-detection phase, or a human reviewer)
+    walk the adjacency list.
+
+    Phase 11 emits four kinds:
+
+      - ``funds_token``        : a deployer EOA → a token contract it
+                                 created. Weight = 1. Always present
+                                 once a token is analyzed; the
+                                 "anchor" edge that lets a cluster
+                                 grow out from a single deployer.
+      - ``co_deployed``        : token contract A → token contract B
+                                 when both were created by the same
+                                 deployer. Weight = # of other tokens
+                                 that same deployer has shipped
+                                 (i.e. how busy that deployer is).
+      - ``operates_pool``      : token contract → its liquidity pool.
+                                 Weight = 1. Marked "operates" rather
+                                 than "owns" because we don't trace
+                                 LP-token ownership from here.
+      - ``transfer_recipient`` : token contract → an address that
+                                 appears as ``to`` in a Transfer event
+                                 during the analyzed window. Weight =
+                                 # of distinct inbound transfers from
+                                 this token in the window.
+
+    Uniqueness on ``(a, b, kind)`` makes re-analysis idempotent:
+    if a token's wallet-graph sweep re-runs (e.g. on a transport
+    retry that succeeded after a partial failure), we don't double-
+    insert edges. The ``weight`` on a duplicate is the maximum of
+    the existing and the new value via ``ON CONFLICT (a,b,kind) DO
+    UPDATE`` in the detector.
+
+    ``evidence_json`` carries the raw inputs the detector used to
+    infer the edge -- transfer counts, the deployer that linked two
+    tokens together, etc. -- so a reviewer can answer "why does this
+    edge exist?" without re-querying the chain.
+    """
+
+    __tablename__ = "wallet_relationships"
+    __table_args__ = (
+        UniqueConstraint("a", "b", "kind", name="uq_wallet_relationships_a_b_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    a: Mapped[str] = mapped_column(String(42), index=True, nullable=False)
+    b: Mapped[str] = mapped_column(String(42), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_seen_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    evidence_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
