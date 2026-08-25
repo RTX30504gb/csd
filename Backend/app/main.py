@@ -16,6 +16,16 @@ Phase 5: also wires the liquidity discovery detector, which probes
 Uniswap V2/V3 on Base for pools pairing each confirmed token against
 WETH/USDC and records them in ``liquidity_pools``. Adds
 ``/tokens/{address}/pools``.
+
+Phase 6: also wires the liquidity monitor, which repeatedly
+re-checks known pools' reserves/liquidity and records a
+``LiquidityEvent`` when one moves sharply. Adds
+``/pools/{pool_address}/events``.
+
+Phase 10: also wires the contract bytecode risk detector, which
+scans each token's runtime bytecode for known dangerous function
+selectors (mint, blacklist, pause, tax/limit setters, upgrade
+hooks) and checks ownership status. Adds ``/tokens/{address}/risk``.
 """
 from contextlib import asynccontextmanager
 
@@ -26,9 +36,11 @@ from app.blockchain.listener import BlockListener
 from app.blockchain.provider import HttpRpcProvider
 from app.config import get_settings
 from app.database.database import AsyncSessionLocal, engine
-from app.database.models import Base, ContractDeployment, LiquidityPool, Token
+from app.database.models import Base, ContractDeployment, ContractRiskFlags, LiquidityEvent, LiquidityPool, Token
+from app.discovery.contract_risk import make_on_block as make_contract_risk_on_block
 from app.discovery.deployments import make_on_block
 from app.discovery.liquidity import make_on_block as make_liquidity_on_block
+from app.discovery.monitor import make_on_block as make_monitor_on_block
 from app.discovery.tokens import make_on_block as make_token_on_block
 
 
@@ -58,6 +70,22 @@ async def lifespan(app: FastAPI):
     # the liquidity sweep picks it up.
     listener.register_on_block(
         make_liquidity_on_block(provider=provider, session_factory=AsyncSessionLocal)
+    )
+    # Phase 6: liquidity monitoring. Runs after discovery in the
+    # same tick -- a pool found by discovery this block is already
+    # in `liquidity_pools` by the time the monitor's staleness query
+    # picks it up (its last_synced_at was set at discovery, so it
+    # won't be re-synced again until min_resync_interval_seconds
+    # has passed).
+    listener.register_on_block(
+        make_monitor_on_block(provider=provider, session_factory=AsyncSessionLocal)
+    )
+    # Phase 10: contract bytecode risk analysis. Independent of the
+    # liquidity pipeline -- only depends on a token being confirmed
+    # (Phase 4), so it's safe to run in any order relative to
+    # discovery/monitor.
+    listener.register_on_block(
+        make_contract_risk_on_block(provider=provider, session_factory=AsyncSessionLocal)
     )
     await listener.start()
 
@@ -225,3 +253,105 @@ async def token_pools(address: str) -> dict:
         "count": len(pools),
         "pools": [_pool_to_dict(p) for p in pools],
     }
+
+
+def _event_to_dict(e: LiquidityEvent) -> dict:
+    return {
+        "event_type": e.event_type,
+        "metric": e.metric,
+        "value_before": str(int(e.value_before)),
+        "value_after": str(int(e.value_after)),
+        "percent_change": e.percent_change,
+        "block_number": e.block_number,
+        "detected_at": e.detected_at.isoformat() if e.detected_at else None,
+    }
+
+
+@app.get("/pools/{pool_address}/events")
+async def pool_events(pool_address: str) -> dict:
+    """Phase 6: liquidity events (large withdrawals/additions) for a pool.
+
+    Returns an empty list (not 404) when the pool exists but has no
+    events yet -- most pools never see a sharp move. 404 only when
+    the pool itself is unknown.
+    """
+    addr = pool_address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid EVM address: {pool_address!r}",
+        )
+    async with AsyncSessionLocal() as session:
+        pool = (
+            await session.execute(
+                select(LiquidityPool).where(LiquidityPool.pool_address == addr)
+            )
+        ).scalars().first()
+        if pool is None:
+            raise HTTPException(status_code=404, detail=f"pool not found: {addr}")
+        events = (
+            await session.execute(
+                select(LiquidityEvent)
+                .where(LiquidityEvent.pool_address == addr)
+                .order_by(LiquidityEvent.detected_at.desc())
+            )
+        ).scalars().all()
+    return {
+        "pool_address": addr,
+        "last_synced_at": pool.last_synced_at.isoformat() if pool.last_synced_at else None,
+        "count": len(events),
+        "events": [_event_to_dict(e) for e in events],
+    }
+
+
+def _risk_flags_to_dict(f: ContractRiskFlags) -> dict:
+    return {
+        "has_mint": f.has_mint,
+        "has_blacklist": f.has_blacklist,
+        "has_pause": f.has_pause,
+        "has_tax_control": f.has_tax_control,
+        "has_max_tx_control": f.has_max_tx_control,
+        "has_max_wallet_control": f.has_max_wallet_control,
+        "has_fee_exclusion_control": f.has_fee_exclusion_control,
+        "has_trading_control": f.has_trading_control,
+        "is_upgradeable_proxy": f.is_upgradeable_proxy,
+        "has_owner_function": f.has_owner_function,
+        "owner_address": f.owner_address,
+        "owner_renounced": f.owner_renounced,
+        "bytecode_size": f.bytecode_size,
+        "analyzed_block": f.analyzed_block,
+        "analyzed_at": f.analyzed_at.isoformat() if f.analyzed_at else None,
+    }
+
+
+@app.get("/tokens/{address}/risk")
+async def token_risk(address: str) -> dict:
+    """Phase 10: bytecode-level risk flags for a token's contract.
+
+    NOTE: these flags mean "this function selector is present in the
+    contract", not "this token is dangerous" -- see
+    ``ContractRiskFlags``'s docstring for the full caveats (no
+    parameter-cap analysis, no proxy-implementation resolution).
+    Returns 404 only when the token itself is unknown; a known token
+    not yet analyzed returns ``analyzed: false``.
+    """
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid EVM address: {address!r}",
+        )
+    async with AsyncSessionLocal() as session:
+        token = (
+            await session.execute(select(Token).where(Token.contract_address == addr))
+        ).scalars().first()
+        if token is None:
+            raise HTTPException(status_code=404, detail=f"token not found: {addr}")
+        flags = (
+            await session.execute(
+                select(ContractRiskFlags).where(ContractRiskFlags.token_address == addr)
+            )
+        ).scalars().first()
+    if flags is None:
+        return {"token_address": addr, "analyzed": False}
+    return {"token_address": addr, "analyzed": True, **_risk_flags_to_dict(flags)}

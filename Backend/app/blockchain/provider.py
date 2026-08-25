@@ -87,6 +87,16 @@ class BlockchainProvider(ABC):
         """
         ...
 
+    @abstractmethod
+    async def get_code(self, address: str) -> bytes:
+        """Return the deployed runtime bytecode at ``address``.
+
+        Empty ``bytes()`` for an EOA or self-destructed contract --
+        this is normal ``eth_getCode`` behaviour (returns ``0x``),
+        not an error, so callers should not treat it as a failure.
+        """
+        ...
+
     @property
     @abstractmethod
     def chain_id(self) -> int:
@@ -168,3 +178,11 @@ class HttpRpcProvider(BlockchainProvider):
         # AsyncWeb3 returns HexBytes; coerce to bytes so the detector
         # can ABI-decode without depending on web3 types.
         return bytes(result_hex)
+
+    async def get_code(self, address: str) -> bytes:
+        try:
+            addr_checksum = self._w3.to_checksum_address(address)
+        except (ValueError, TypeError):
+            addr_checksum = address
+        code = await self._w3.eth.get_code(addr_checksum)
+        return bytes(code)
