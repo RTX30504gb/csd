@@ -97,43 +97,6 @@ class BlockchainProvider(ABC):
         """
         ...
 
-    @abstractmethod
-    async def get_logs(
-        self,
-        *,
-        address: str | None = None,
-        topics: list[str] | None = None,
-        from_block: int,
-        to_block: int,
-    ) -> list[dict]:
-        """Issue ``eth_getLogs`` for a bounded block range and return decoded logs.
-
-        ``address`` filters to logs emitted by a single contract
-        (the typical "show me Transfer events for this token" case);
-        ``None`` means "any contract". ``topics`` is an exact-match
-        list (``[T0, T1, T2, T3]`` per the JSON-RPC spec -- empty
-        slots match any topic). Returns a list of normalized dicts::
-
-            {
-              "address":          str,        # emitting contract (lower-case)
-              "blockNumber":      int,
-              "transactionHash":  str,        # lower-case
-              "logIndex":         str,        # hex string (matches web3.py)
-              "data":             str,        # 0x-prefixed hex
-              "topics":           list[str],  # 0x-prefixed hex, indexed 0..N
-            }
-
-        Implementations MUST bound the range internally (raise if
-        ``to_block - from_block`` is too large for the underlying
-        RPC); the caller is responsible for chunking if it asks
-        for a larger range than the provider accepts.
-
-        Phase 11 (wallet graph) is the first consumer; intentionally
-        minimal scope -- no pagination cursor, no ``blockhash``
-        alternative key.
-        """
-        ...
-
     @property
     @abstractmethod
     def chain_id(self) -> int:
@@ -223,46 +186,3 @@ class HttpRpcProvider(BlockchainProvider):
             addr_checksum = address
         code = await self._w3.eth.get_code(addr_checksum)
         return bytes(code)
-
-    async def get_logs(
-        self,
-        *,
-        address: str | None = None,
-        topics: list[str] | None = None,
-        from_block: int,
-        to_block: int,
-    ) -> list[dict]:
-        """Issue ``eth_getLogs`` and return a normalized list.
-
-        The Base public RPC tolerates wide ranges, but paid providers
-        typically cap at ~10000 blocks. We don't pre-chunk here -- the
-        caller controls range selection so it can tune to whichever
-        provider is configured.
-        """
-        params: dict = {
-            "fromBlock": int(from_block),
-            "toBlock": int(to_block),
-        }
-        if address is not None:
-            try:
-                params["address"] = self._w3.to_checksum_address(address)
-            except (ValueError, TypeError):
-                params["address"] = address
-        if topics is not None:
-            params["topics"] = topics
-        raw_logs = await self._w3.eth.get_logs(params)
-        out: list[dict] = []
-        for entry in raw_logs:
-            out.append(
-                {
-                    "address": entry["address"].lower(),
-                    "blockNumber": int(entry["blockNumber"]),
-                    "transactionHash": entry["transactionHash"].lower(),
-                    # web3.py exposes logIndex as HexBytes/int; normalise to
-                    # hex str so the consumer's keying is reproducible.
-                    "logIndex": hex(int(entry["logIndex"])),
-                    "data": entry["data"],
-                    "topics": [bytes(t).hex() for t in entry["topics"]],
-                }
-            )
-        return out

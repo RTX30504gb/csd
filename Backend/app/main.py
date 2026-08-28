@@ -47,12 +47,19 @@ from app.database.models import (
     Base,
     ContractDeployment,
     ContractRiskFlags,
+    HolderConcentration,
     LiquidityEvent,
     LiquidityPool,
+    ProcessedBlock,
     Token,
+    TokenHolder,
     Wallet,
     WalletRelationship,
 )
+from app.discovery.holder_analysis import make_on_block as make_holder_analysis_on_block
+from app.services.address_classification import classify_address
+from app.services.deployer_analysis import analyze_deployer
+from app.services.risk_features import compute_risk_features
 from app.discovery.contract_risk import make_on_block as make_contract_risk_on_block
 from app.discovery.deployments import make_on_block
 from app.discovery.liquidity import make_on_block as make_liquidity_on_block
@@ -112,6 +119,14 @@ async def lifespan(app: FastAPI):
     # RPC budget focused on lighter work first.
     listener.register_on_block(
         make_wallet_graph_on_block(provider=provider, session_factory=AsyncSessionLocal)
+    )
+    # Spec sec.12: holder analysis. Runs last -- it's the heaviest
+    # detector per token (full Transfer-log replay from creation
+    # block), and reuses classify_address (spec sec.13) for the
+    # creator-associated-holdings figure, so ordering relative to
+    # the others doesn't matter functionally.
+    listener.register_on_block(
+        make_holder_analysis_on_block(provider=provider, session_factory=AsyncSessionLocal)
     )
     await listener.start()
 
@@ -556,3 +571,110 @@ async def token_wallets(address: str) -> dict:
             for e in edges
         ],
     }
+
+
+@app.get("/tokens/{address}/risk-features")
+async def token_risk_features(address: str) -> dict:
+    """Spec sec.11: numerical risk features derived from Phase 10's
+    raw ContractRiskFlags. See ``compute_risk_features`` docstring
+    for exactly what each feature does and does not verify."""
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(status_code=400, detail=f"invalid EVM address: {address!r}")
+    async with AsyncSessionLocal() as session:
+        token = (
+            await session.execute(select(Token).where(Token.contract_address == addr))
+        ).scalars().first()
+        if token is None:
+            raise HTTPException(status_code=404, detail=f"token not found: {addr}")
+        flags = (
+            await session.execute(
+                select(ContractRiskFlags).where(ContractRiskFlags.token_address == addr)
+            )
+        ).scalars().first()
+    if flags is None:
+        return {"token_address": addr, "analyzed": False}
+    return {"token_address": addr, "analyzed": True, **compute_risk_features(flags)}
+
+
+@app.get("/addresses/{address}/classification")
+async def address_classification(address: str) -> dict:
+    """Spec sec.13: classify an address (burn/pool/router/bridge/
+    deployer/deployer_associated/contract/eoa/unknown)."""
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(status_code=400, detail=f"invalid EVM address: {address!r}")
+    async with AsyncSessionLocal() as session:
+        provider = getattr(app.state, "block_listener", None)
+        chain_provider = provider._provider if provider is not None else None
+        result = await classify_address(addr, session, provider=chain_provider)
+    return {"address": addr, **result}
+
+
+@app.get("/tokens/{address}/holders")
+async def token_holders(address: str, limit: int = 20) -> dict:
+    """Spec sec.12: reconstructed holder balances and concentration
+    stats. Returns an empty holder list (not 404) for a known token
+    not yet analyzed. 404 only when the token itself is unknown."""
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(status_code=400, detail=f"invalid EVM address: {address!r}")
+    limit = max(1, min(limit, 100))
+    async with AsyncSessionLocal() as session:
+        token = (
+            await session.execute(select(Token).where(Token.contract_address == addr))
+        ).scalars().first()
+        if token is None:
+            raise HTTPException(status_code=404, detail=f"token not found: {addr}")
+        concentration = (
+            await session.execute(
+                select(HolderConcentration).where(HolderConcentration.token_address == addr)
+            )
+        ).scalars().first()
+        holders = (
+            await session.execute(
+                select(TokenHolder)
+                .where(TokenHolder.token_address == addr)
+                .order_by(TokenHolder.rank.asc())
+                .limit(limit)
+            )
+        ).scalars().all()
+
+    if concentration is None:
+        return {"token_address": addr, "analyzed": False, "holders": []}
+
+    return {
+        "token_address": addr,
+        "analyzed": True,
+        "largest_holder_pct": concentration.largest_holder_pct,
+        "top5_pct": concentration.top5_pct,
+        "top10_pct": concentration.top10_pct,
+        "top20_pct": concentration.top20_pct,
+        "creator_holdings_pct": concentration.creator_holdings_pct,
+        "creator_associated_holdings_pct": concentration.creator_associated_holdings_pct,
+        "largest_holder_address": concentration.largest_holder_address,
+        "largest_holder_category": concentration.largest_holder_category,
+        "holder_count": concentration.holder_count,
+        "analyzed_block": concentration.analyzed_block,
+        "analyzed_at": concentration.analyzed_at.isoformat() if concentration.analyzed_at else None,
+        "holders": [
+            {"address": h.holder_address, "balance": str(int(h.balance)), "rank": h.rank}
+            for h in holders
+        ],
+    }
+
+
+@app.get("/deployers/{address}/analysis")
+async def deployer_analysis(address: str) -> dict:
+    """Spec sec.14: aggregate a deployer's prior track record across
+    every token/contract we've seen them deploy. See
+    ``analyze_deployer`` docstring for what's not computed
+    (funding_sources) and why."""
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(status_code=400, detail=f"invalid EVM address: {address!r}")
+    async with AsyncSessionLocal() as session:
+        checkpoint = await session.get(ProcessedBlock, 1)
+        current_block = checkpoint.block_number if checkpoint is not None else None
+        result = await analyze_deployer(addr, session, current_block=current_block)
+    return result

@@ -145,6 +145,10 @@ class Token(Base):
     contract_analyzed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Spec sec.12: timestamp of the last holder-balance reconstruction.
+    holder_analysis_analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Phase 11: timestamp of the last wallet-graph analysis. Same
     # NULL-means-unprobed convention; the detector sets it whether
     # or not any edges were discovered (so a token with no inbound
@@ -438,6 +442,84 @@ class WalletRelationship(Base):
     last_seen_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
     evidence_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class TokenHolder(Base):
+    """A reconstructed holder balance for a token (spec sec.12).
+
+    Populated by processing every ``Transfer`` event for a token from
+    its creation block to the block the detector last ran at: a
+    running ledger, ``balance[to] += value``, ``balance[from] -=
+    value`` (skipping the zero address on either side, since mint/
+    burn have no real counterparty balance to adjust).
+
+    Only holders with a nonzero reconstructed balance at analysis
+    time are stored -- an address that received and fully sent back
+    out never appears here, which is correct (it isn't a current
+    holder).
+    """
+
+    __tablename__ = "token_holders"
+    __table_args__ = (
+        UniqueConstraint("token_address", "holder_address", name="uq_token_holders_token_holder"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_address: Mapped[str] = mapped_column(
+        String(42),
+        ForeignKey("tokens.contract_address", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    holder_address: Mapped[str] = mapped_column(String(42), index=True, nullable=False)
+    balance: Mapped[int] = mapped_column(Numeric(78, 0), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 = largest holder
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class HolderConcentration(Base):
+    """Summary concentration stats for a token (spec sec.12).
+
+    One row per token, replaced (not appended to) on each re-analysis.
+    Percentages are relative to ``tokens.total_supply``. Per spec's
+    explicit caution ("do not automatically classify high
+    concentration as malicious; first classify infrastructure
+    addresses"), ``largest_holder_address`` is annotated with its
+    ``largest_holder_category`` (from the Phase 13 address
+    classifier) precisely so a consumer can tell "40% held by the
+    liquidity pool" (expected, benign) apart from "40% held by an
+    unlabeled EOA" (worth scrutiny) without re-deriving it.
+    """
+
+    __tablename__ = "holder_concentration"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_address: Mapped[str] = mapped_column(
+        String(42),
+        ForeignKey("tokens.contract_address", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    largest_holder_pct: Mapped[float] = mapped_column(nullable=False)
+    top5_pct: Mapped[float] = mapped_column(nullable=False)
+    top10_pct: Mapped[float] = mapped_column(nullable=False)
+    top20_pct: Mapped[float] = mapped_column(nullable=False)
+    creator_holdings_pct: Mapped[float] = mapped_column(nullable=False)
+    creator_associated_holdings_pct: Mapped[float] = mapped_column(nullable=False)
+    largest_holder_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    largest_holder_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    holder_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    analyzed_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    analyzed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
