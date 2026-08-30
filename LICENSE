@@ -1,21 +1,82 @@
-MIT License
+# Non-Commercial Attribution and Source Reference License
 
-Copyright (c) 2026 Jarvis
+Copyright (c) 2026 RTX30504gb
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+All rights reserved except as expressly granted under this license.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+## 1. Permission to Use
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Permission is hereby granted to any person obtaining a copy of this software, source code, project, documentation, or associated files (the "Software") to use, copy, study, and modify the Software, subject to the conditions below.
+
+## 2. Attribution Required
+
+Any use, distribution, publication, sharing, or modification of the Software must provide appropriate and clearly visible credit to the original author.
+
+The credit must include:
+
+* The name or username of the original author.
+* A statement that the Software is based on or derived from the original project.
+* A direct link to the original repository or source code:
+
+**github.com/RTX30504gb/csd**
+
+Credit must not be removed, hidden, or presented in a way that reasonably prevents users from identifying the original source.
+
+## 3. Modifications and Derivative Works
+
+Any modified, adapted, improved, or derivative version of the Software must:
+
+1. Clearly state that changes have been made to the original Software.
+2. Provide appropriate credit to the original author.
+3. Include a direct and accessible link to the original repository or source code.
+4. Retain this license and all applicable copyright notices.
+
+A modified or derivative version may not falsely claim to be entirely original work.
+
+## 4. Non-Commercial Use Only
+
+The Software may not be used, distributed, sold, sublicensed, incorporated into, or otherwise exploited for commercial purposes without prior written permission from the original author.
+
+Commercial use includes, but is not limited to:
+
+* Selling the Software or derivative works.
+* Using the Software as part of a paid product or service.
+* Incorporating the Software into software intended to generate commercial revenue.
+* Selling access to services, products, platforms, or features substantially based on the Software.
+* Using the Software or derivative works for direct commercial profit.
+
+Written permission from the original author is required before any commercial use.
+
+## 5. Redistribution
+
+Redistribution of the original Software or any modified version is permitted only if:
+
+* Appropriate credit is provided to the original author.
+* A direct link to the original repository is included.
+* This license is included with the redistributed Software.
+* The redistribution remains strictly non-commercial unless explicit written permission has been granted by the original author.
+
+## 6. No Removal of Attribution
+
+No person may remove, alter, obscure, or falsely replace copyright notices, attribution requirements, repository links, or references to the original author.
+
+## 7. No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+## 8. Violation of This License
+
+Any use of the Software that violates the conditions of this license automatically terminates the permissions granted under this license.
+
+The original author reserves the right to pursue any remedies available under applicable law for unauthorized commercial use, copyright infringement, removal of attribution, or other violations of this license.
+
+---
+
+By using, copying, modifying, or distributing the Software, you agree to comply with the terms of this license.
+
+Copyright (c) 2026 RTX30504gb
+
+Original Source Repository:
+github.com/RTX30504gb/csd

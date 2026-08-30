@@ -9,17 +9,26 @@ history, wallet relationships, and trading behavior, and produces an
 with the evidence that produced it.
 
 ## Status
-
-- [x] **Phase 1** - Base RPC connection (HTTP)
-- [x] **Phase 2** - Block listener (HTTP polling, DB checkpoint)  <- *current*
+- [x] Phase 1 - Base RPC connection
+- [x] Phase 2 - Block listener
 - [x] Phase 3 - Contract deployment detection
 - [x] Phase 4 - ERC-20 detection
 - [x] Phase 5 - Token database
-- [ ] Phase 6 - DEX / liquidity discovery
-- [ ] ...
+- [x] Phase 6 - DEX / liquidity discovery
+- [x] Phase 7 - Liquidity monitoring
+- [x] Phase 8 - Contract security analyzer
+- [x] Phase 9 - Holder analyzer
+- [x] Phase 10 - Deployer history
+- [x] Phase 11 - Wallet relationship graph
+- [x] Phase 12 - Behavior / event detection
+- [x] Phase 13 - Rule-based risk engine
+- [x] Phase 14 - FastAPI
+- [ ] Phase 15 - React dashboard
+- [ ] Phase 16 - Latency optimization
+- [ ] Phase 17 - Historical dataset
+- [ ] Phase 18 - XGBoost model
+- [ ] Phase 19 - Model evaluation
 - [ ] Phase 20 - Real-world asset verification extension
-
-See the full spec / dev order in the project plan.
 
 ## Stack
 
