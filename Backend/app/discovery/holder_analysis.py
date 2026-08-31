@@ -75,46 +75,62 @@ def make_on_block(
     """Return an ``on_block(block)`` callback that reconstructs holder balances."""
 
     async def on_block(block: dict) -> None:
-        current_block = int(block["number"])
-        async with session_factory() as session:
-            tokens = (
-                await session.execute(
-                    select(Token)
-                    .where(Token.holder_analysis_analyzed_at.is_(None))
-                    .order_by(Token.id.asc())
-                    .limit(batch_size)
-                )
-            ).scalars().all()
-            if not tokens:
-                return
-
-            now = datetime.now(timezone.utc)
-            analyzed = 0
-            for token in tokens:
-                try:
-                    balances = await _reconstruct_balances(
-                        provider, token.contract_address, token.creation_block,
-                        current_block, max_log_range,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "holder analysis failed for %s; will retry next tick",
-                        token.contract_address,
-                    )
-                    continue
-
-                await _store_results(session, token, balances, current_block, now)
-                token.holder_analysis_analyzed_at = now
-                analyzed += 1
-
-            if analyzed:
-                logger.info(
-                    "block %s: holder analysis on %d token(s)",
-                    current_block, analyzed,
-                )
-            await session.commit()
+        await process_holder_analysis(
+            block,
+            provider,
+            session_factory,
+            batch_size,
+            max_log_range,
+        )
 
     return on_block
+
+
+async def process_holder_analysis(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    max_log_range: int = DEFAULT_MAX_LOG_RANGE,
+) -> None:
+    current_block = int(block["number"])
+    async with session_factory() as session:
+        tokens = (
+            await session.execute(
+                select(Token)
+                .where(Token.holder_analysis_analyzed_at.is_(None))
+                .order_by(Token.id.asc())
+                .limit(batch_size)
+            )
+        ).scalars().all()
+        if not tokens:
+            return
+
+        now = datetime.now(timezone.utc)
+        analyzed = 0
+        for token in tokens:
+            try:
+                balances = await _reconstruct_balances(
+                    provider, token.contract_address, token.creation_block,
+                    current_block, max_log_range,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "holder analysis failed for %s; will retry next tick",
+                    token.contract_address,
+                )
+                continue
+
+            await _store_results(session, token, balances, current_block, now)
+            token.holder_analysis_analyzed_at = now
+            analyzed += 1
+
+        if analyzed:
+            logger.info(
+                "block %s: holder analysis on %d token(s)",
+                current_block, analyzed,
+            )
+        await session.commit()
 
 
 async def _reconstruct_balances(

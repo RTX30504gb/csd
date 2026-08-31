@@ -137,40 +137,49 @@ def make_on_block(
     """Return an ``on_block(block)`` callback that runs bytecode risk analysis."""
 
     async def on_block(block: dict) -> None:
-        async with session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(Token)
-                    .where(Token.contract_analyzed_at.is_(None))
-                    .order_by(Token.id.asc())
-                    .limit(batch_size)
-                )
-            ).scalars().all()
-            if not rows:
-                return
-
-            now = datetime.now(timezone.utc)
-            block_number = int(block["number"])
-            analyzed = 0
-            for token in rows:
-                try:
-                    flags = await _analyze_token(provider, token.contract_address, block_number, now)
-                except Exception:  # noqa: BLE001
-                    # Transport error -- leave contract_analyzed_at
-                    # untouched so this token retries next tick.
-                    continue
-                token.contract_analyzed_at = now
-                session.add(flags)
-                analyzed += 1
-
-            if analyzed:
-                logger.info(
-                    "block %s: contract risk analysis on %d token(s)",
-                    block_number, analyzed,
-                )
-            await session.commit()
+        await process_contract_risk(block, provider, session_factory, batch_size)
 
     return on_block
+
+
+async def process_contract_risk(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> None:
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Token)
+                .where(Token.contract_analyzed_at.is_(None))
+                .order_by(Token.id.asc())
+                .limit(batch_size)
+            )
+        ).scalars().all()
+        if not rows:
+            return
+
+        now = datetime.now(timezone.utc)
+        block_number = int(block["number"])
+        analyzed = 0
+        for token in rows:
+            try:
+                flags = await _analyze_token(provider, token.contract_address, block_number, now)
+            except Exception:  # noqa: BLE001
+                # Transport error -- leave contract_analyzed_at
+                # untouched so this token retries next tick.
+                continue
+            token.contract_analyzed_at = now
+            session.add(flags)
+            analyzed += 1
+
+        if analyzed:
+            logger.info(
+                "block %s: contract risk analysis on %d token(s)",
+                block_number, analyzed,
+            )
+        await session.commit()
 
 
 async def _analyze_token(

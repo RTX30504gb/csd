@@ -75,85 +75,110 @@ def make_on_block(
     # block don't each trigger a get_block RPC.
     _ts_cache: dict[int, datetime] = {}
 
-    async def _block_timestamp(n: int) -> datetime:
-        if n in _ts_cache:
-            return _ts_cache[n]
-        b = await provider.get_block(n, full_transactions=False)
-        ts = datetime.fromtimestamp(int(b["timestamp"]), tz=timezone.utc)
-        _ts_cache[n] = ts
-        return ts
-
     async def on_block(block: dict) -> None:
-        # Warm the cache for the block we just processed.
-        try:
-            await _block_timestamp(int(block["number"]))
-        except Exception:  # noqa: BLE001
-            # Cache warming is best-effort; the detector will fall
-            # back to now() if it ever misses.
-            pass
-
-        async with session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(ContractDeployment)
-                    .where(
-                        ContractDeployment.is_erc20.is_(False),
-                        ContractDeployment.erc20_checked_at.is_(None),
-                    )
-                    .order_by(ContractDeployment.id.asc())
-                    .limit(batch_size)
-                )
-            ).scalars().all()
-            if not rows:
-                return
-
-            confirmed: list[dict] = []
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                outcome, decoded = await _probe_one(provider, row, _block_timestamp)
-                if outcome is _PROBE_OK:
-                    ts = await _safe_block_timestamp(provider, row.creation_block, _block_timestamp)
-                    confirmed.append(
-                        {
-                            "contract_address": row.contract_address,
-                            "deployer": row.deployer,
-                            "name": decoded["name"],
-                            "symbol": decoded["symbol"],
-                            "decimals": decoded["decimals"],
-                            "total_supply": decoded["total_supply"],
-                            "creation_block": row.creation_block,
-                            "creation_timestamp": ts,
-                            "detected_at": now,
-                        }
-                    )
-                    row.is_erc20 = True
-                    # Mark "we have probed this" so a future
-                    # listener restart / re-scan doesn't re-probe
-                    # a contract we've already classified.
-                    row.erc20_checked_at = now
-                elif outcome is _PROBE_REVERT:
-                    row.erc20_checked_at = now
-                # else _PROBE_TRANSPORT: leave both columns as-is
-
-            if confirmed:
-                stmt = (
-                    pg_insert(Token)
-                    .values(confirmed)
-                    .on_conflict_do_nothing(index_elements=["contract_address"])
-                )
-                await session.execute(stmt)
-                logger.info(
-                    "block %s: %d ERC-20 probe(s), %d confirmed",
-                    block["number"], len(rows), len(confirmed),
-                )
-            else:
-                logger.info(
-                    "block %s: %d ERC-20 probe(s), 0 confirmed",
-                    block["number"], len(rows),
-                )
-            await session.commit()
+        await process_token_discovery(block, provider, session_factory, batch_size, _ts_cache)
 
     return on_block
+
+
+async def process_token_discovery(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    ts_cache: dict[int, datetime] | None = None,
+) -> None:
+    # Warm the cache for the block we just processed.
+    try:
+        # We use a helper to handle the cache
+        async def _block_timestamp(n: int) -> datetime:
+            if ts_cache is not None and n in ts_cache:
+                return ts_cache[n]
+            b = await provider.get_block(n, full_transactions=False)
+            ts = datetime.fromtimestamp(int(b["timestamp"]), tz=timezone.utc)
+            if ts_cache is not None:
+                ts_cache[n] = ts
+            return ts
+
+        await _block_timestamp(int(block["number"]))
+    except Exception:  # noqa: BLE001
+        # Cache warming is best-effort; the detector will fall
+        # back to now() if it ever misses.
+        pass
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(ContractDeployment)
+                .where(
+                    ContractDeployment.is_erc20.is_(False),
+                    ContractDeployment.erc20_checked_at.is_(None),
+                )
+                .order_by(ContractDeployment.id.asc())
+                .limit(batch_size)
+            )
+        ).scalars().all()
+        if not rows:
+            return
+
+        confirmed: list[dict] = []
+        now = datetime.now(timezone.utc)
+
+        async def _safe_block_timestamp(block_number: int) -> datetime:
+            try:
+                return await _block_timestamp(block_number)
+            except Exception:
+                return now
+
+        for row in rows:
+            # We pass the internal _block_timestamp helper for caching
+            async def _internal_ts(n: int) -> datetime:
+                if ts_cache is not None and n in ts_cache:
+                    return ts_cache[n]
+                b = await provider.get_block(n, full_transactions=False)
+                ts = datetime.fromtimestamp(int(b["timestamp"]), tz=timezone.utc)
+                if ts_cache is not None:
+                    ts_cache[n] = ts
+                return ts
+
+            outcome, decoded = await _probe_one(provider, row, _internal_ts)
+            if outcome is _PROBE_OK:
+                ts = await _safe_block_timestamp(row.creation_block)
+                confirmed.append(
+                    {
+                        "contract_address": row.contract_address,
+                        "deployer": row.deployer,
+                        "name": decoded["name"],
+                        "symbol": decoded["symbol"],
+                        "decimals": decoded["decimals"],
+                        "total_supply": decoded["total_supply"],
+                        "creation_block": row.creation_block,
+                        "creation_timestamp": ts,
+                        "detected_at": now,
+                    }
+                )
+                row.is_erc20 = True
+                row.erc20_checked_at = now
+            elif outcome is _PROBE_REVERT:
+                row.erc20_checked_at = now
+
+        if confirmed:
+            stmt = (
+                pg_insert(Token)
+                .values(confirmed)
+                .on_conflict_do_nothing(index_elements=["contract_address"])
+            )
+            await session.execute(stmt)
+            logger.info(
+                "block %s: %d ERC-20 probe(s), %d confirmed",
+                block["number"], len(rows), len(confirmed),
+            )
+        else:
+            logger.info(
+                "block %s: %d ERC-20 probe(s), 0 confirmed",
+                block["number"], len(rows),
+            )
+        await session.commit()
 
 
 # --- probe outcomes --------------------------------------------------

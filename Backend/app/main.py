@@ -56,16 +56,8 @@ from app.database.models import (
     Wallet,
     WalletRelationship,
 )
-from app.discovery.holder_analysis import make_on_block as make_holder_analysis_on_block
-from app.services.address_classification import classify_address
-from app.services.deployer_analysis import analyze_deployer
-from app.services.risk_features import compute_risk_features
-from app.discovery.contract_risk import make_on_block as make_contract_risk_on_block
-from app.discovery.deployments import make_on_block
-from app.discovery.liquidity import make_on_block as make_liquidity_on_block
-from app.discovery.monitor import make_on_block as make_monitor_on_block
-from app.discovery.tokens import make_on_block as make_token_on_block
-from app.discovery.wallet_graph import make_on_block as make_wallet_graph_on_block
+from app.queue import wrap_as_queued_task
+from app.workers.manager import WorkerManager
 
 
 @asynccontextmanager
@@ -76,65 +68,30 @@ async def lifespan(app: FastAPI):
 
     provider = HttpRpcProvider()
     listener = BlockListener(provider=provider, session_factory=AsyncSessionLocal)
-    # Phase 3: register the deployment detector. It is callback-shaped
-    # so the listener remains chain-agnostic.
-    listener.register_on_block(
-        make_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
-    # Phase 4: also register the ERC-20 detector. It runs after the
-    # deployment detector in the same tick (registration order), so
-    # any deployment just observed in this block is already in the
-    # DB by the time the token detector picks it up.
-    listener.register_on_block(
-        make_token_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
-    # Phase 5: liquidity pool discovery. Runs after the token
-    # detector in the same tick (registration order), so a token
-    # confirmed in this block is already in `tokens` by the time
-    # the liquidity sweep picks it up.
-    listener.register_on_block(
-        make_liquidity_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
-    # Phase 6: liquidity monitoring. Runs after discovery in the
-    # same tick -- a pool found by discovery this block is already
-    # in `liquidity_pools` by the time the monitor's staleness query
-    # picks it up (its last_synced_at was set at discovery, so it
-    # won't be re-synced again until min_resync_interval_seconds
-    # has passed).
-    listener.register_on_block(
-        make_monitor_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
-    # Phase 10: contract bytecode risk analysis. Independent of the
-    # liquidity pipeline -- only depends on a token being confirmed
-    # (Phase 4), so it's safe to run in any order relative to
-    # discovery/monitor.
-    listener.register_on_block(
-        make_contract_risk_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
-    # Phase 11: wallet-graph analysis. Runs after Phase 4 (it only
-    # considers confirmed tokens) and after Phase 5/6 (it reads from
-    # ``liquidity_pools`` for the operates_pool edge). Registration
-    # order doesn't strictly matter -- the detector re-queries the
-    # DB inside its tick -- but running it last keeps the per-tick
-    # RPC budget focused on lighter work first.
-    listener.register_on_block(
-        make_wallet_graph_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
-    # Spec sec.12: holder analysis. Runs last -- it's the heaviest
-    # detector per token (full Transfer-log replay from creation
-    # block), and reuses classify_address (spec sec.13) for the
-    # creator-associated-holdings figure, so ordering relative to
-    # the others doesn't matter functionally.
-    listener.register_on_block(
-        make_holder_analysis_on_block(provider=provider, session_factory=AsyncSessionLocal)
-    )
+
+    # Phase 16: Use queued tasks for asynchronous analysis.
+    # We register a simple wrapper that pushes a task to Redis.
+    listener.register_on_block(wrap_as_queued_task("deployments"))
+    listener.register_on_block(wrap_as_queued_task("tokens"))
+    listener.register_on_block(wrap_as_queued_task("liquidity"))
+    listener.register_on_block(wrap_as_queued_task("monitor"))
+    listener.register_on_block(wrap_as_queued_task("risk"))
+    listener.register_on_block(wrap_as_queued_task("wallet"))
+    listener.register_on_block(wrap_as_queued_task("holders"))
+
+    # Start the worker manager to consume these tasks.
+    worker_manager = WorkerManager(provider=provider)
+    await worker_manager.start()
+
     await listener.start()
 
     app.state.block_listener = listener
+    app.state.worker_manager = worker_manager
     try:
         yield
     finally:
         await listener.stop()
+        await worker_manager.stop()
         await engine.dispose()
 
 

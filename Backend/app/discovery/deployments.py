@@ -79,49 +79,57 @@ def make_on_block(
     """
 
     async def on_block(block: dict) -> None:
-        # If the block came in as just tx hashes, refetch with full
-        # tx objects so we can filter cheaply.
-        txs = block.get("transactions", [])
-        if txs and isinstance(txs[0], str):
-            block = await provider.get_block(block["number"], full_transactions=True)
-            txs = block["transactions"]
-
-        deployment_hashes = [h for h in _candidate_hashes(block)]
-        if not deployment_hashes:
-            return
-
-        new_rows: list[dict] = []
-        for h in deployment_hashes:
-            receipt = await provider.get_transaction_receipt(h)
-            if receipt.get("status") != 1:
-                continue  # reverted deployment
-            contract_address = receipt.get("contractAddress")
-            if not contract_address:
-                continue
-            new_rows.append(
-                {
-                    "contract_address": _lower(contract_address),
-                    "deployer": _lower(receipt["from"]),
-                    "creation_tx": _lower(receipt["transactionHash"]),
-                    "creation_block": int(receipt["blockNumber"]),
-                }
-            )
-
-        if not new_rows:
-            return
-
-        async with session_factory() as session:
-            inserted = await _upsert_deployments(session, new_rows)
-            await session.commit()
-
-        logger.info(
-            "block %s: %d deployment candidate(s), %d new",
-            block["number"],
-            len(deployment_hashes),
-            inserted,
-        )
+        await process_deployment_block(block, provider, session_factory)
 
     return on_block
+
+
+async def process_deployment_block(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # If the block came in as just tx hashes, refetch with full
+    # tx objects so we can filter cheaply.
+    txs = block.get("transactions", [])
+    if txs and isinstance(txs[0], str):
+        block = await provider.get_block(block["number"], full_transactions=True)
+        txs = block["transactions"]
+
+    deployment_hashes = [h for h in _candidate_hashes(block)]
+    if not deployment_hashes:
+        return
+
+    new_rows: list[dict] = []
+    for h in deployment_hashes:
+        receipt = await provider.get_transaction_receipt(h)
+        if receipt.get("status") != 1:
+            continue  # reverted deployment
+        contract_address = receipt.get("contractAddress")
+        if not contract_address:
+            continue
+        new_rows.append(
+            {
+                "contract_address": _lower(contract_address),
+                "deployer": _lower(receipt["from"]),
+                "creation_tx": _lower(receipt["transactionHash"]),
+                "creation_block": int(receipt["blockNumber"]),
+            }
+        )
+
+    if not new_rows:
+        return
+
+    async with session_factory() as session:
+        inserted = await _upsert_deployments(session, new_rows)
+        await session.commit()
+
+    logger.info(
+        "block %s: %d deployment candidate(s), %d new",
+        block["number"],
+        len(deployment_hashes),
+        inserted,
+    )
 
 
 # --- helpers ---------------------------------------------------------

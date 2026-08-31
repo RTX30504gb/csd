@@ -100,48 +100,57 @@ def make_on_block(
     """
 
     async def on_block(block: dict) -> None:
-        async with session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(Token)
-                    .where(Token.liquidity_checked_at.is_(None))
-                    .order_by(Token.id.asc())
-                    .limit(batch_size)
-                )
-            ).scalars().all()
-            if not rows:
-                return
-
-            found_total = 0
-            checked = 0
-            now = datetime.now(timezone.utc)
-            for token in rows:
-                pools, transport_failed = await _discover_pools_for_token(
-                    provider, token.contract_address, block
-                )
-                if transport_failed:
-                    # Leave liquidity_checked_at untouched; retry this
-                    # token on a later tick.
-                    continue
-                checked += 1
-                token.liquidity_checked_at = now
-                if pools:
-                    found_total += len(pools)
-                    stmt = (
-                        pg_insert(LiquidityPool)
-                        .values(pools)
-                        .on_conflict_do_nothing(index_elements=["pool_address"])
-                    )
-                    await session.execute(stmt)
-
-            if checked:
-                logger.info(
-                    "block %s: liquidity sweep %d token(s), %d pool(s) found",
-                    block["number"], checked, found_total,
-                )
-            await session.commit()
+        await process_liquidity_discovery(block, provider, session_factory, batch_size)
 
     return on_block
+
+
+async def process_liquidity_discovery(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> None:
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Token)
+                .where(Token.liquidity_checked_at.is_(None))
+                .order_by(Token.id.asc())
+                .limit(batch_size)
+            )
+        ).scalars().all()
+        if not rows:
+            return
+
+        found_total = 0
+        checked = 0
+        now = datetime.now(timezone.utc)
+        for token in rows:
+            pools, transport_failed = await _discover_pools_for_token(
+                provider, token.contract_address, block
+            )
+            if transport_failed:
+                # Leave liquidity_checked_at untouched; retry this
+                # token on a later tick.
+                continue
+            checked += 1
+            token.liquidity_checked_at = now
+            if pools:
+                found_total += len(pools)
+                stmt = (
+                    pg_insert(LiquidityPool)
+                    .values(pools)
+                    .on_conflict_do_nothing(index_elements=["pool_address"])
+                )
+                await session.execute(stmt)
+
+        if checked:
+            logger.info(
+                "block %s: liquidity sweep %d token(s), %d pool(s) found",
+                block["number"], checked, found_total,
+            )
+        await session.commit()
 
 
 async def _discover_pools_for_token(

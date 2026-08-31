@@ -73,85 +73,105 @@ def make_on_block(
     """
 
     async def on_block(block: dict) -> None:
-        async with session_factory() as session:
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                seconds=min_resync_interval_seconds
-            )
-            rows = (
-                await session.execute(
-                    select(LiquidityPool)
-                    .where(
-                        (LiquidityPool.last_synced_at.is_(None))
-                        | (LiquidityPool.last_synced_at < cutoff)
-                    )
-                    .order_by(LiquidityPool.last_synced_at.asc().nulls_first())
-                    .limit(batch_size)
-                )
-            ).scalars().all()
-            if not rows:
-                return
-
-            synced = 0
-            events = 0
-            now = datetime.now(timezone.utc)
-            block_number = int(block["number"])
-            for pool in rows:
-                try:
-                    if pool.dex == "uniswap_v2":
-                        new_value = await _resync_v2(provider, pool)
-                    elif pool.dex == "uniswap_v3":
-                        new_value = await _resync_v3(provider, pool)
-                    else:
-                        # Unknown dex -- nothing this detector knows
-                        # how to monitor; mark synced so it doesn't
-                        # get retried forever.
-                        pool.last_synced_at = now
-                        synced += 1
-                        continue
-                except Exception:  # noqa: BLE001
-                    # Transport/decoding failure -- leave
-                    # last_synced_at untouched, retry next tick.
-                    continue
-
-                old_value = pool.reserve_token
-                if old_value is not None and int(old_value) > 0:
-                    percent_change = (new_value - int(old_value)) / int(old_value)
-                    event_type = None
-                    if percent_change <= -withdrawal_threshold:
-                        event_type = "withdrawal"
-                    elif percent_change >= addition_threshold:
-                        event_type = "addition"
-                    if event_type is not None:
-                        session.add(
-                            LiquidityEvent(
-                                pool_address=pool.pool_address,
-                                event_type=event_type,
-                                metric=(
-                                    "reserve_token"
-                                    if pool.dex == "uniswap_v2"
-                                    else "v3_liquidity"
-                                ),
-                                value_before=int(old_value),
-                                value_after=new_value,
-                                percent_change=percent_change,
-                                block_number=block_number,
-                                detected_at=now,
-                            )
-                        )
-                        events += 1
-
-                pool.reserve_token = new_value
-                pool.last_synced_at = now
-                synced += 1
-
-            if synced:
-                logger.info(
-                    "block %s: liquidity monitor synced %d pool(s), %d event(s)",
-                    block_number, synced, events,
-                )
-            await session.commit()
+        await process_liquidity_monitoring(
+            block,
+            provider,
+            session_factory,
+            batch_size,
+            min_resync_interval_seconds,
+            withdrawal_threshold,
+            addition_threshold,
+        )
 
     return on_block
+
+
+async def process_liquidity_monitoring(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    min_resync_interval_seconds: int = DEFAULT_MIN_RESYNC_INTERVAL_SECONDS,
+    withdrawal_threshold: float = DEFAULT_WITHDRAWAL_THRESHOLD,
+    addition_threshold: float = DEFAULT_ADDITION_THRESHOLD,
+) -> None:
+    async with session_factory() as session:
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=min_resync_interval_seconds
+        )
+        rows = (
+            await session.execute(
+                select(LiquidityPool)
+                .where(
+                    (LiquidityPool.last_synced_at.is_(None))
+                    | (LiquidityPool.last_synced_at < cutoff)
+                )
+                .order_by(LiquidityPool.last_synced_at.asc().nulls_first())
+                .limit(batch_size)
+            )
+        ).scalars().all()
+        if not rows:
+            return
+
+        synced = 0
+        events = 0
+        now = datetime.now(timezone.utc)
+        block_number = int(block["number"])
+        for pool in rows:
+            try:
+                if pool.dex == "uniswap_v2":
+                    new_value = await _resync_v2(provider, pool)
+                elif pool.dex == "uniswap_v3":
+                    new_value = await _resync_v3(provider, pool)
+                else:
+                    # Unknown dex -- nothing this detector knows
+                    # how to monitor; mark synced so it doesn't
+                    # get retried forever.
+                    pool.last_synced_at = now
+                    synced += 1
+                    continue
+            except Exception:  # noqa: BLE001
+                # Transport/decoding failure -- leave
+                # last_synced_at untouched, retry next tick.
+                continue
+
+            old_value = pool.reserve_token
+            if old_value is not None and int(old_value) > 0:
+                percent_change = (new_value - int(old_value)) / int(old_value)
+                event_type = None
+                if percent_change <= -withdrawal_threshold:
+                    event_type = "withdrawal"
+                elif percent_change >= addition_threshold:
+                    event_type = "addition"
+                if event_type is not None:
+                    session.add(
+                        LiquidityEvent(
+                            pool_address=pool.pool_address,
+                            event_type=event_type,
+                            metric=(
+                                "reserve_token"
+                                if pool.dex == "uniswap_v2"
+                                else "v3_liquidity"
+                            ),
+                            value_before=int(old_value),
+                            value_after=new_value,
+                            percent_change=percent_change,
+                            block_number=block_number,
+                            detected_at=now,
+                        )
+                    )
+                    events += 1
+
+            pool.reserve_token = new_value
+            pool.last_synced_at = now
+            synced += 1
+
+        if synced:
+            logger.info(
+                "block %s: liquidity monitor synced %d pool(s), %d event(s)",
+                block_number, synced, events,
+            )
+        await session.commit()
 
 
 async def _resync_v2(provider: BlockchainProvider, pool: LiquidityPool) -> int:

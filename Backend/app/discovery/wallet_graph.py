@@ -147,60 +147,70 @@ def make_on_block(
     """Return an ``on_block(block)`` callback that builds wallet edges."""
 
     async def on_block(block: dict) -> None:
-        current_block = int(block["number"])
-        async with session_factory() as session:
-            tokens = (
-                await session.execute(
-                    select(Token)
-                    .where(Token.wallet_graph_analyzed_at.is_(None))
-                    .order_by(Token.id.asc())
-                    .limit(batch_size)
-                )
-            ).scalars().all()
-            if not tokens:
-                return
-
-            now = datetime.now(timezone.utc)
-            analyzed = 0
-            for token in tokens:
-                try:
-                    await _analyze_token(
-                        session=session,
-                        provider=provider,
-                        token=token,
-                        current_block=current_block,
-                        top_n_recipients=top_n_recipients,
-                        max_log_range=max_log_range,
-                        now=now,
-                    )
-                except Exception:  # noqa: BLE001
-                    # Transport / decoding error -- leave the token's
-                    # wallet_graph_analyzed_at untouched so the next
-                    # tick retries from scratch. Edges inserted by
-                    # earlier steps in this loop are already committed
-                    # below; we don't roll them back, because they're
-                    # still correct observations (a deployer *does*
-                    # fund the token they created, regardless of
-                    # whether we got the Transfer events).
-                    logger.exception(
-                        "wallet-graph analysis failed mid-token %s; "
-                        "partial edges (if any) kept, token unmarked",
-                        token.contract_address,
-                    )
-                    await session.rollback()
-                    continue
-
-                token.wallet_graph_analyzed_at = now
-                analyzed += 1
-
-            if analyzed:
-                logger.info(
-                    "block %s: wallet-graph analysis on %d token(s)",
-                    current_block, analyzed,
-                )
-            await session.commit()
+        await process_wallet_graph(
+            block,
+            provider,
+            session_factory,
+            batch_size,
+            top_n_recipients,
+            max_log_range,
+        )
 
     return on_block
+
+
+async def process_wallet_graph(
+    block: dict,
+    provider: BlockchainProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    top_n_recipients: int = DEFAULT_TOP_N_RECIPIENTS,
+    max_log_range: int = DEFAULT_MAX_LOG_RANGE,
+) -> None:
+    current_block = int(block["number"])
+    async with session_factory() as session:
+        tokens = (
+            await session.execute(
+                select(Token)
+                .where(Token.wallet_graph_analyzed_at.is_(None))
+                .order_by(Token.id.asc())
+                .limit(batch_size)
+            )
+        ).scalars().all()
+        if not tokens:
+            return
+
+        now = datetime.now(timezone.utc)
+        analyzed = 0
+        for token in tokens:
+            try:
+                await _analyze_token(
+                    session=session,
+                    provider=provider,
+                    token=token,
+                    current_block=current_block,
+                    top_n_recipients=top_n_recipients,
+                    max_log_range=max_log_range,
+                    now=now,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "wallet-graph analysis failed mid-token %s; "
+                    "partial edges (if any) kept, token unmarked",
+                    token.contract_address,
+                )
+                await session.rollback()
+                continue
+
+            token.wallet_graph_analyzed_at = now
+            analyzed += 1
+
+        if analyzed:
+            logger.info(
+                "block %s: wallet-graph analysis on %d token(s)",
+                current_block, analyzed,
+            )
+        await session.commit()
 
 
 async def _analyze_token(

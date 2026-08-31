@@ -286,11 +286,10 @@ const TokenPage: React.FC = () => {
                     <br />
                     DEX: {pool.dex || 'Unknown'} |
                     Pair: {pool.pair_asset || 'Unknown'} |
-                    Reserves:
-                    {`${pool.reserve_token ? formatNumber(pool.reserve_token) : '0'} ${token.symbol} / ${pool.reserve_pair ? formatNumber(pool.reserve_pair) : '0'}
-                     ${pool.pair_asset || ''}`}
+                    Reserves:{' '}
+                    {`${pool.reserve_token ? formatNumber(pool.reserve_token) : '0'} ${token.symbol} / ${pool.reserve_pair ? formatNumber(pool.reserve_pair) : '0'} ${pool.pair_asset || ''}`}
                   </div>
-                )
+                ))}
               </div>
             </>
           ) : (
@@ -306,15 +305,17 @@ const TokenPage: React.FC = () => {
                 <div key={index} className="event-item">
                   <div className="event-time">[{new Date(event.detected_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}]</div>
                   <div className="event-description">
-                    {event.event_type === 'ADD' && 'Liquidity Added'} ||
-                    {event.event_type === 'REMOVE' && 'Liquidity Removed'} ||
-                    {event.event_type}
+                    {event.event_type === 'ADD'
+                      ? 'Liquidity Added'
+                      : event.event_type === 'REMOVE'
+                      ? 'Liquidity Removed'
+                      : event.event_type}
                   </div>
                   <div className="event-details">
                     Change: {formatNumber(event.value_before)} → {formatNumber(event.value_after)} ({event.percent_change}%)
                   </div>
                 </div>
-              )}
+              ))}
             </div>
           ) : (
             <p>No recent liquidity events for this token's pools.</p>

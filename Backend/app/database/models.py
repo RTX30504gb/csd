@@ -524,3 +524,33 @@ class HolderConcentration(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class TokenSnapshot(Base):
+    """A historical snapshot of a token's risk features (Phase 17).
+
+    Used to build a training dataset for ML-based rug detection.
+    Stored at regular intervals after token discovery.
+    """
+
+    __tablename__ = "token_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_address: Mapped[str] = mapped_column(
+        String(42),
+        ForeignKey("tokens.contract_address", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )
+    snapshot_interval: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # e.g. "1m", "5m", "1h"
+    features_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
