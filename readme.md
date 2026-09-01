@@ -23,12 +23,12 @@ with the evidence that produced it.
 - [x] Phase 12 - Behavior / event detection
 - [x] Phase 13 - Rule-based risk engine
 - [x] Phase 14 - FastAPI
-- [ ] Phase 15 - React dashboard
-- [ ] Phase 16 - Latency optimization
-- [ ] Phase 17 - Historical dataset
-- [ ] Phase 18 - XGBoost model
-- [ ] Phase 19 - Model evaluation
-- [ ] Phase 20 - Real-world asset verification extension
+- [x] Phase 15 - React dashboard
+- [x] Phase 16 - Latency optimization
+- [x] Phase 17 - Historical dataset
+- [x] Phase 18 - XGBoost model
+- [x] Phase 19 - Model evaluation
+- [x] Phase 20 - Real-world asset verification extension
 
 ## Stack
 
