@@ -1,4 +1,4 @@
-import { usePolling } from './usePolling'
+import usePolling from "./usePolling";
 import { getAddressClassification } from '../services/api'
 
 interface ClassificationData {

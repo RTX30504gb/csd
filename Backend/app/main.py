@@ -38,6 +38,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import or_, select
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.blockchain.listener import BlockListener
 from app.blockchain.provider import HttpRpcProvider
@@ -58,6 +59,7 @@ from app.database.models import (
 )
 from app.queue import wrap_as_queued_task
 from app.workers.manager import WorkerManager
+from app.services.ml_evaluator import ml_evaluator
 
 
 @asynccontextmanager
@@ -554,6 +556,13 @@ async def token_risk_features(address: str) -> dict:
     return {"token_address": addr, "analyzed": True, **compute_risk_features(flags)}
 
 
+@app.get("/api/ml/metrics")
+async def ml_metrics() -> dict:
+    """Phase 19: return evaluation metrics for the ML rug-pull model."""
+    async with AsyncSessionLocal() as session:
+        return await ml_evaluator.evaluate_performance(session)
+
+
 @app.get("/addresses/{address}/classification")
 async def address_classification(address: str) -> dict:
     """Spec sec.13: classify an address (burn/pool/router/bridge/
@@ -635,3 +644,15 @@ async def deployer_analysis(address: str) -> dict:
         current_block = checkpoint.block_number if checkpoint is not None else None
         result = await analyze_deployer(addr, session, current_block=current_block)
     return result
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

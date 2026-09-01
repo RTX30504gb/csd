@@ -7,11 +7,12 @@
     "serve": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "axios": "^1.4.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.14.0",
-    "recharts": "^2.6.0",
-    "axios": "^1.4.0"
+    "recharts": "^2.15.4"
   },
   "devDependencies": {
     "@types/react": "^18.0.0",

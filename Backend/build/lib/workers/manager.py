@@ -54,7 +54,7 @@ class WorkerManager:
 
                 if task_type in TASK_MAP:
                     handler = TASK_MAP[task_type]
-                    logger.info("Worker-%d popping task %s from %s", worker_id, task_type, queue_name)
+                    logger.debug("Worker-%d executing task %s from %s", worker_id, task_type, queue_name)
                     await handler(self._provider, data)
                 else:
                     logger.warning("Unknown task type %s received by worker-%d", task_type, worker_id)

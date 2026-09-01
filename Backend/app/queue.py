@@ -17,9 +17,13 @@ class TaskQueue:
 
     async def push(self, queue_name: str, task_type: str, data: Any) -> None:
         """Push a task to the specified queue."""
-        payload = json.dumps({"type": task_type, "data": data})
-        await self._redis.lpush(queue_name, payload)
-        logger.debug("Pushed task %s to queue %s", task_type, queue_name)
+        try:
+            payload = json.dumps({"type": task_type, "data": data})
+            await self._redis.lpush(queue_name, payload)
+            logger.debug("Pushed task %s to queue %s", task_type, queue_name)
+        except Exception:
+            logger.exception("Failed to push task %s to Redis queue %s", task_type, queue_name)
+
 
     async def pop(self, queue_name: str, timeout: int = 0) -> tuple[str, dict] | None:
         """Pop a task from the specified queue.

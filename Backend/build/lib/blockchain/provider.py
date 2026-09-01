@@ -11,9 +11,6 @@ from web3.providers.rpc import AsyncHTTPProvider
 
 from app.config import get_settings
 
-import logging
-
-logger = logging.getLogger(__name__)
 
 class BlockchainProvider(ABC):
     """Thin interface the listener depends on.
@@ -119,7 +116,6 @@ class HttpRpcProvider(BlockchainProvider):
         self._rpc_url = rpc_url or settings.base_rpc_url
         self._chain_id = chain_id or settings.base_chain_id
         self._w3 = AsyncWeb3(AsyncHTTPProvider(self._rpc_url))
-        logger.info("[RPC] Connected to %s (chain_id=%s)", self._rpc_url, self._chain_id)
 
     @property
     def chain_id(self) -> int:

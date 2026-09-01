@@ -14,6 +14,8 @@ const usePolling = <T>(
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<Error | null>(null)
   const savedFetchFn = useRef(fetchFn)
+  const isFirstLoad = useRef(true)
+
 
   useEffect(() => {
     savedFetchFn.current = fetchFn
@@ -26,7 +28,10 @@ const usePolling = <T>(
     const fetchData = async () => {
       if (!isMounted) return
 
-      setLoading(true)
+      if (isFirstLoad.current) {
+        setLoading(true)
+        isFirstLoad.current = false
+      }
       try {
         const result = await savedFetchFn.current()
         if (isMounted) {

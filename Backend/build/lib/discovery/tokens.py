@@ -143,7 +143,6 @@ async def process_token_discovery(
 
             outcome, decoded = await _probe_one(provider, row, _internal_ts)
             if outcome is _PROBE_OK:
-                logger.info("[ERC20] Token detected: %s (%s)", decoded["symbol"], row.contract_address)
                 ts = await _safe_block_timestamp(row.creation_block)
                 confirmed.append(
                     {
@@ -170,7 +169,6 @@ async def process_token_discovery(
                 .on_conflict_do_nothing(index_elements=["contract_address"])
             )
             await session.execute(stmt)
-            logger.info("[DATABASE] Tokens saved: %d", len(confirmed))
             logger.info(
                 "block %s: %d ERC-20 probe(s), %d confirmed",
                 block["number"], len(rows), len(confirmed),

@@ -108,7 +108,6 @@ async def process_deployment_block(
         contract_address = receipt.get("contractAddress")
         if not contract_address:
             continue
-        logger.info("[DEPLOYMENT] Contract detected: %s", contract_address)
         new_rows.append(
             {
                 "contract_address": _lower(contract_address),

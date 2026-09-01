@@ -119,7 +119,6 @@ class BlockListener:
             await self._process_block(n)
 
     async def _process_block(self, block_number: int) -> None:
-        logger.info("[BLOCK] Processing block %s", block_number)
         block = await self._provider.get_block(block_number)
         # run callbacks
         for cb in self._callbacks:
@@ -131,7 +130,7 @@ class BlockListener:
         async with self._session_factory() as session:
             await _save_checkpoint(session, block["number"], block["hash"])
             await session.commit()
-        logger.debug(
+        logger.info(
             "processed block %s (tx=%d)", block["number"], len(block["transactions"])
         )
 

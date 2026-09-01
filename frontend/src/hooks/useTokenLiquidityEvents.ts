@@ -1,4 +1,4 @@
-import { usePolling } from './usePolling'
+import usePolling from './usePolling'
 import { getTokenPools, getPoolEvents } from '../services/api'
 
 interface TokenLiquidityEventsData {

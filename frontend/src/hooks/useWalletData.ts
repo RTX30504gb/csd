@@ -1,4 +1,4 @@
-import { usePolling } from './usePolling'
+import usePolling from './usePolling'
 import {
   getWallet,
   getWalletRelationships

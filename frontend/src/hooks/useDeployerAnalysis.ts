@@ -1,4 +1,4 @@
-import { usePolling } from './usePolling'
+import usePolling from './usePolling'
 import { getDeployerAnalysis } from '../services/api'
 
 interface DeployerAnalysisData {

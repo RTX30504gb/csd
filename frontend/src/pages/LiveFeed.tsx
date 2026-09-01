@@ -1,22 +1,24 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getRecentTokens } from '../services/api'
-import { AddressDisplay } from '../components/ui/AddressDisplay'
-import { LoadingSpinner } from '../components/ui/LoadingSpinner'
-import { ErrorDisplay } from '../components/ui/ErrorDisplay'
-import { RiskScoreBadge } from '../components/ui/RiskScoreBadge'
+import AddressDisplay from '../components/ui/AddressDisplay'
+import LoadingSpinner from '../components/ui/LoadingSpinner'
+import ErrorDisplay from '../components/ui/ErrorDisplay'
+import RiskScoreBadge from '../components/ui/RiskScoreBadge'
 
 const LiveFeed: React.FC = () => {
   const [tokens, setTokens] = useState<any[]>([])
-  const [previousTokens, setPreviousTokens] = useState<string[]>([])
+  const previousTokensRef = useRef<string[]>([])
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<Error | null>(null)
   const [events, setEvents] = useState<Array<{ time: string; description: string }>>([])
 
   useEffect(() => {
     let isMounted = true
-    const fetchTokens = async () => {
+    const fetchTokens = async (isInitialLoad: boolean = false) => {
       try {
-        setLoading(true)
+        if (isInitialLoad) {
+          setLoading(true)
+        }
         const response = await getRecentTokens(20)
         const newTokens = response.tokens || []
 
@@ -26,7 +28,7 @@ const LiveFeed: React.FC = () => {
           // Detect new tokens and create events
           const newTokenAddresses = newTokens
             .map((t: any) => t.contract_address.toLowerCase())
-            .filter((addr: string) => !previousTokens.includes(addr))
+            .filter((addr: string) => !previousTokensRef.current.includes(addr))
 
           if (newTokenAddresses.length > 0) {
             const newEvents = newTokenAddresses.map(addr => {
@@ -67,7 +69,7 @@ const LiveFeed: React.FC = () => {
             })
           }
 
-          setPreviousTokens(newTokens.map(t => t.contract_address.toLowerCase()))
+          previousTokensRef.current = newTokens.map((t: any) => t.contract_address.toLowerCase())
           setLoading(false)
         }
       } catch (err) {
@@ -75,17 +77,21 @@ const LiveFeed: React.FC = () => {
           setError(err as Error)
           setLoading(false)
         }
+      } finally {
+        if (isMounted) {
+          setLoading(false)
+        }
       }
     }
 
-    fetchTokens()
-    const intervalId = setInterval(fetchTokens, 3000) // Poll every 3 seconds
+    fetchTokens(true)
+    const intervalId = setInterval(() => fetchTokens(false), 3000) // Poll every 3 seconds
 
     return () => {
       isMounted = false
       clearInterval(intervalId)
     }
-  }, [previousTokens])
+  }, [])
 
   if (loading) {
     return <LoadingSpinner />

@@ -1,8 +1,9 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { TokenPage } from './pages/TokenPage'
-import { WalletPage } from './pages/WalletPage'
-import { LiveFeed } from './pages/LiveFeed'
-import { Header } from './components/layout/Header'
+import TokenPage from './pages/TokenPage'
+import WalletPage from './pages/WalletPage'
+import LiveFeed from './pages/LiveFeed'
+import { MLPerformancePage } from './pages/MLPerformancePage'
+import Header from './components/layout/Header'
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
         <Route path="/token/:address" element={<TokenPage />} />
         <Route path="/wallet/:address" element={<WalletPage />} />
         <Route path="/live" element={<LiveFeed />} />
+        <Route path="/ml-performance" element={<MLPerformancePage />} />
       </Routes>
     </BrowserRouter>
   )

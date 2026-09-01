@@ -1,10 +1,10 @@
 import { useParams } from 'react-router-dom'
-import { useWalletData } from '../hooks/useWalletData'
-import { useDeployerAnalysis } from '../hooks/useDeployerAnalysis'
-import { AddressDisplay } from '../components/ui/AddressDisplay'
-import { LoadingSpinner } from '../components/ui/LoadingSpinner'
-import { ErrorDisplay } from '../components/ui/ErrorDisplay'
-import { RiskScoreBadge } from '../components/ui/RiskScoreBadge'
+import useWalletData from '../hooks/useWalletData'
+import useDeployerAnalysis from '../hooks/useDeployerAnalysis'
+import AddressDisplay from '../components/ui/AddressDisplay'
+import LoadingSpinner from '../components/ui/LoadingSpinner'
+import ErrorDisplay from '../components/ui/ErrorDisplay'
+import RiskScoreBadge from '../components/ui/RiskScoreBadge'
 
 const WalletPage: React.FC = () => {
   const { address } = useParams<{ address: string }>()
