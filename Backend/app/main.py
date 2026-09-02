@@ -1,39 +1,4 @@
-"""FastAPI app shell.
 
-Phase 2: only /health and /chain-info. The block listener is started
-in the lifespan context manager so it shares the process.
-
-Phase 3: wires the contract-deployment detector as an ``on_block``
-callback so every new block is scanned for contract creations.
-
-Phase 4: also wires the ERC-20 detector, which probes each
-un-flagged deployment for name/symbol/decimals/totalSupply and
-records confirmed tokens in the ``tokens`` table. Adds ``/tokens``
-and ``/tokens/{address}`` endpoints so the frontend (and integration
-tests) can read what the detector has classified.
-
-Phase 5: also wires the liquidity discovery detector, which probes
-Uniswap V2/V3 on Base for pools pairing each confirmed token against
-WETH/USDC and records them in ``liquidity_pools``. Adds
-``/tokens/{address}/pools``.
-
-Phase 6: also wires the liquidity monitor, which repeatedly
-re-checks known pools' reserves/liquidity and records a
-``LiquidityEvent`` when one moves sharply. Adds
-``/pools/{pool_address}/events``.
-
-Phase 10: also wires the contract bytecode risk detector, which
-scans each token's runtime bytecode for known dangerous function
-selectors (mint, blacklist, pause, tax/limit setters, upgrade
-hooks) and checks ownership status. Adds ``/tokens/{address}/risk``.
-
-Phase 11: also wires the wallet-graph detector, which builds the
-edge list ``(deployer -> token, token -> peer token, token -> pool,
-token -> transfer_recipient)`` from the data already in the DB plus
-one ``eth_getLogs`` call per analyzed token. Adds
-``/wallets/{address}``, ``/wallets/{address}/relationships``, and
-``/tokens/{address}/wallets`` endpoints.
-"""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -64,15 +29,14 @@ from app.services.ml_evaluator import ml_evaluator
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ensure schema exists (Phase 2 only; Alembic in later phase)
+    
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     provider = HttpRpcProvider()
     listener = BlockListener(provider=provider, session_factory=AsyncSessionLocal)
 
-    # Phase 16: Use queued tasks for asynchronous analysis.
-    # We register a simple wrapper that pushes a task to Redis.
+
     listener.register_on_block(wrap_as_queued_task("deployments"))
     listener.register_on_block(wrap_as_queued_task("tokens"))
     listener.register_on_block(wrap_as_queued_task("liquidity"))
