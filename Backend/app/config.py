@@ -17,9 +17,7 @@ class Settings(BaseSettings):
 
     # Listener
     block_poll_interval: float = 2.0
-    # If set and the persisted checkpoint is below this, start from it
-    # anyway. Useful for smoke tests, backfills, and not replaying the
-    # entire chain after a wipe. Default: 0 (no override).
+    # If set and the persisted checkpoint is below this, start from it anyway. Useful for smoke tests, backfills, and not replaying the entire chain after a wipe. Default: 0 (no override).
     listener_start_block: int = 0
 
     # PostgreSQL (async driver)
