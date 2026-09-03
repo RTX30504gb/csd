@@ -1,5 +1,5 @@
-"""FastAPI app shell.
 
+<<<<<<< HEAD
 Phase 2: only /health and /chain-info. The block listener is started
 in the lifespan context manager so it shares the process.
 
@@ -36,6 +36,8 @@ one ``eth_getLogs`` call per analyzed token. Adds
 """
 import logging
 from asyncio import gather
+=======
+>>>>>>> c5e99df09a84ae8f43e5960f891f4fc5bd6707da
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Body
@@ -72,6 +74,7 @@ from app.services.risk_engine import risk_engine
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+<<<<<<< HEAD
     # Configure logging for the app package
     settings = get_settings()
     logging.basicConfig(
@@ -82,6 +85,9 @@ async def lifespan(app: FastAPI):
     logger.setLevel(settings.log_level if settings.log_level else "INFO")
 
     # ensure schema exists (Phase 2 only; Alembic in later phase)
+=======
+    
+>>>>>>> c5e99df09a84ae8f43e5960f891f4fc5bd6707da
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -89,8 +95,11 @@ async def lifespan(app: FastAPI):
     listener = BlockListener(provider=provider, session_factory=AsyncSessionLocal)
 
 
+<<<<<<< HEAD
     # Phase 16: Use queued tasks for asynchronous analysis.
     # We register a simple wrapper that pushes a task to Redis.
+=======
+>>>>>>> c5e99df09a84ae8f43e5960f891f4fc5bd6707da
     listener.register_on_block(wrap_as_queued_task("deployments"))
     listener.register_on_block(wrap_as_queued_task("tokens"))
     listener.register_on_block(wrap_as_queued_task("liquidity"))
