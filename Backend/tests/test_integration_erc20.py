@@ -147,7 +147,7 @@ async def test_probe_non_erc20_reverts_or_garbage(provider: HttpRpcProvider) -> 
         creation_tx="0x" + "00" * 32,
         creation_block=0,
     )
-    outcome, decoded = await _probe_one(provider, fake_dep, lambda n: None)
+    outcome, decoded = await _probe_one(provider, fake_dep.contract_address)
     assert outcome is not _PROBE_OK, (
         f"L2StandardBridge unexpectedly passed ERC-20 probe: {decoded!r}"
     )

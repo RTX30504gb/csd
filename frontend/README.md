@@ -1,147 +1,243 @@
-# Rug Pull Detector Frontend
+# Token Watcher
 
-This is the React + TypeScript frontend for the Real-Time Crypto Rug-Pull Detection Engine.
+I need you to build a complete frontend UI from scratch for an existing project called Rug Pull Detector.
 
-## Features
+I cannot upload my current frontend, so do not assume you can inspect or modify existing files. Generate the frontend as a self-contained implementation that I can later integrate into my React/Vite project.
 
-- **Token Page**: View detailed information about any ERC-20 token including risk score, category breakdown, holder distribution, liquidity information, and recent events
-- **Wallet Page**: Analyze wallet activity including deployed tokens, transaction history, and relationship graphs
-- **Live Feed**: Real-time stream of newly detected tokens and important events
-- **Responsive Design**: Works on desktop and mobile devices
-- **Automatic Refresh**: Data updates every 2-3 seconds as specified in the MVP
+PROJECT
 
-## Getting Started
+Rug Pull Detector is a real-time blockchain security tool that detects newly deployed ERC-20 tokens and analyzes them for potential rug pulls.
 
-### Prerequisites
+The backend already exists. Do not build a backend. Do not create mock blockchain logic. Focus entirely on the frontend UI.
 
-- Node.js 18+ 
-- npm or yarn
-- The backend API running on http://localhost:8000 (see backend README for setup instructions)
+Assume the API provides token objects shaped roughly like:
 
-### Installation
+{
+  contract_address: string;
+  deployer: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+  total_supply: string;
+  creation_block: number;
+  creation_timestamp: string;
+  detected_at: string;
+  risk?: {
+    score: number;
+    level: string;
+    reasons: string[];
+    computed_at: string;
+  };
+}
 
-1. Clone the repository
-2. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
+DESIGN VISION
 
-### Running the Application
+Create something dark, fun, chaotic, weird, green, hacker-like, and memorable.
 
-1. Make sure the backend is running:
-   ```bash
-   # In the backend directory
-   uvicorn app.main:app --reload
-   ```
+It should feel like a custom underground blockchain intelligence tool, somewhere between:
 
-2. Start the frontend development server:
-   ```bash
-   npm run dev
-   ```
+ a hacker terminal
 
-3. Open your browser to http://localhost:5173
+ malware analysis software
 
-## Project Structure
+ retro computer interfaces
 
+ cyber surveillance software
+
+ experimental web art
+
+Do NOT make a generic SaaS dashboard.
+
+STRICTLY AVOID
+
+ Glassmorphism
+
+ Purple gradients
+
+ Generic blue cyberpunk UI
+
+ Floating gradient blobs
+
+ Oversized rounded cards
+
+ Generic crypto startup aesthetic
+
+ Excessive dashboards full of meaningless statistics
+
+VISUAL STYLE
+
+ Near-black background
+
+ Matrix/hacker green as the primary accent
+
+ Off-white and muted grey text
+
+ Monospace fonts for addresses and technical information
+
+ Bold experimental typography for headings
+
+ Subtle scanlines, CRT texture, noise, grids, or terminal artifacts
+
+ Sharp borders and unusual layout elements
+
+Make it feel handcrafted and slightly chaotic, while keeping important information readable.
+
+INTERACTIVE MOVABLE TITLES
+
+Important titles should not be static.
+
+Create draggable title elements that users can move around the interface.
+
+The main title:
+
+RUG PULL DETECTOR
+
+should behave like an interactive draggable object with smooth movement and slight rotation/tilt.
+
+Add several smaller movable labels around the interface, but keep them controlled so they don't interfere with usability.
+
+Use browser-native pointer events or lightweight React logic instead of adding unnecessary heavy dependencies.
+
+CREATOR SIGNATURE
+
+Add:
+
+MADE BY JARVIS
+
+somewhere visible and stylish.
+
+It should feel like a signature hidden inside a piece of hacker software rather than a normal footer.
+
+Possible styling:
+
+ Small floating draggable label
+
+ Terminal signature
+
+ Slight glitch animation
+
+ Fixed corner signature
+
+Make it memorable.
+
+MAIN LIVE FEED
+
+The main page should be a real-time LIVE TOKEN FEED.
+
+Tokens should appear like incoming security events, not ecommerce cards.
+
+Each token row should display:
+
+ Token symbol
+
+ Token name
+
+ Shortened contract address
+
+ Detection timestamp
+
+ Risk score
+
+ Risk level
+
+Example:
+
+[RUG]
+RUGPULL COIN
+0x333333...3333
+
+RISK // 95
+CRITICAL
+
+Risk levels:
+
+ Critical: red accent
+
+ Suspicious: amber/yellow accent
+
+ Low: green accent
+
+Green should remain the overall interface accent, while risk colours are reserved for risk status.
+
+MICROINTERACTIONS
+
+Add interesting interactions such as:
+
+ Token rows animate when entering the feed
+
+ Hover effects feel like inspecting a system record
+
+ Subtle glitch effects
+
+ Blinking terminal cursor
+
+ LIVE indicator pulse
+
+ Draggable headings
+
+ Slight text distortion on hover
+
+Do not make everything move constantly. Motion should feel deliberate.
+
+TOP SYSTEM BAR
+
+Include a compact system/status area containing things like:
+
+SYSTEM: ONLINE
+NETWORK: BASE
+SCANNER: ACTIVE
+
+Make it look like part of a surveillance/analysis tool.
+
+TECHNICAL REQUIREMENTS
+
+Build this using:
+
+ React
+
+ TypeScript
+
+ CSS
+
+Keep components reasonably modular.
+
+Generate:
+
+ Main application layout
+
+ Live Feed page
+
+ Token row component
+
+ Risk score display component
+
+ Draggable title component
+
+ Relevant CSS/styles
+
+Do not build backend functionality.
+
+Use mock data only to demonstrate the UI, but structure components so the mock data can later be replaced with API data matching the provided object structure.
+
+The result must feel distinctive and handmade. It should look like a weird, cool blockchain surveillance tool someone actually designed, not a template generated from “make me a futuristic hacker dashboard.”
+
+This project was built with [Lovable](https://lovable.dev).
+
+## Build with Lovable
+
+Continue developing this project in the [Lovable editor](https://lovable.dev/projects/ef4d0ce7-3a05-4488-8886-dc928210f9f3).
+
+- **Ship faster**: describe what you want to build and Lovable handles the code.
+- **Stay in sync**: every change made in Lovable is committed straight to this repository.
+- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+
+## Development
+
+Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+
+```sh
+git clone <this-repository-url>
+cd <repository-name>
+npm i
+npm run dev
 ```
-src/
-├── components/     # Reusable UI components
-│   ├── charts/     # Data visualization components (Recharts)
-│   ├── layout/     # Page layout components
-│   └── ui/         # Primitive UI components (buttons, badges, etc.)
-├── hooks/          # Custom React hooks for data fetching
-├── pages/          # Page components (TokenPage, WalletPage, LiveFeed)
-├── services/       # API service layer
-├── utils/          # Utility functions (formatters, constants)
-├── App.tsx         # Main application component
-├── main.tsx        # Entry point
-└── index.css       # Global styles
-```
-
-## API Integration
-
-The frontend consumes the following backend endpoints:
-
-- `GET /tokens/{address}` - Token basic information
-- `GET /tokens/{address}/risk` - Risk score and category breakdown
-- `GET /tokens/{address}/holders` - Holder analysis and distribution
-- `GET /tokens/{address}/liquidity` - Liquidity pool information
-- `GET /tokens/{address}/pools` - Liquidty pools for a token
-- `GET /pools/{pool_address}/events` - Liquidity events for a pool
-- `GET /wallets/{address}` - Wallet basic information
-- `GET /wallets/{address}/relationships` - Wallet transaction relationships
-- `GET /tokens/{address}/wallets` - Wallets associated with a token
-- `GET /addresses/{address}/classification` - Address type classification
-- `GET /deployers/{address}/analysis` - Deployer history and risk analysis
-- `GET /tokens/recent` - Recently detected tokens (for live feed)
-
-## Design Choices
-
-- **React 18** with **TypeScript** for type safety and maintainability
-- **Vite** for fast development builds and hot module replacement
-- **Recharts** for data visualization as specified in the MVP
-- **Axios** for HTTP requests to the backend API
-- **React Router DOM v6** for client-side routing
-- **Custom hooks** for data fetching and polling logic
-- **Responsive design** with mobile-first approach
-
-## Custom Hooks
-
-- `useApi.ts` - Base API call handler with loading/error states
-- `usePolling.ts` - Automatic data refresh with configurable intervals
-- `useTokenData.ts` - Aggregates token, risk, holders, liquidity, and pool data
-- `useWalletData.ts` - Combines wallet info and relationships
-- `useDeployerAnalysis.ts` - Fetches deployer history and risk analysis
-- `useTokenLiquidityEvents.ts` - Gets liquidity events for a token's pools
-- `useAddressClassification.ts` - Gets address type (EOA, contract, pool, etc.)
-
-## Components
-
-### UI Components
-- `RiskScoreBadge` - Color-coded circular risk score display
-- `AddressDisplay` - Truncated address display with tooltip
-- `LoadingSpinner` - Loading state indicator
-- `ErrorDisplay` - Error state with retry option
-
-### Chart Components
-- `HolderChart` - Pie chart showing holder distribution percentages
-- `LiquidityChart` - Bar chart showing token vs pair reserves
-
-### Layout Components
-- `Header` - Application header with navigation
-
-### Pages
-- `TokenPage` - Detailed view of a specific token
-- `WalletPage` - Analysis of a specific wallet
-- `LiveFeed` - Real-time stream of token detections and events
-
-## Environment Variables
-
-Create a `.env` file in the frontend directory:
-
-```
-VITE_API_URL=http://localhost:8000
-```
-
-## Deployment
-
-To build for production:
-
-```bash
-npm run build
-```
-
-The output will be in the `dist/` directory, which can be served by any static file host.
-
-## Development Guidelines
-
-- Follow the existing code style and patterns
-- Keep components small and focused
-- Use TypeScript interfaces for API responses
-- Handle loading and error states gracefully
-- Make components reusable when possible
-- Write meaningful commit messages

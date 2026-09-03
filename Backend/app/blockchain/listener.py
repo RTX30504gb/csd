@@ -27,12 +27,17 @@ from app.blockchain.provider import BlockchainProvider
 from app.config import get_settings
 from app.database.models import ProcessedBlock
 
+# Try to import aiohttp for 429 detection
+try:
+    from aiohttp import ClientResponseError
+except ImportError:
+    ClientResponseError = type("ClientResponseError", (Exception,), {"status": 0})
+
 logger = logging.getLogger(__name__)
 
 BlockCallback = Callable[[dict], Awaitable[None]]
 
 CHECKPOINT_ROW_ID = 1
-
 
 class BlockListener:
     def __init__(
@@ -47,6 +52,14 @@ class BlockListener:
         self._callbacks: list[BlockCallback] = []
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
+
+        # Backoff state
+        self._current_backoff = 0.0
+        self._min_backoff = 5.0
+        self._max_backoff = 300.0
+
+        # In-memory checkpoint to avoid redundant DB reads
+        self._last_processed_block = None
 
     # --- callback registration -----------------------------------------
     def register_on_block(self, cb: BlockCallback) -> None:
@@ -80,13 +93,44 @@ class BlockListener:
         try:
             while not self._stop_event.is_set():
                 try:
+                    # Log current state before polling
+                    # Note: _last_processed_block might be None initially
+                    last_val = self._last_processed_block if self._last_processed_block is not None else "Loading..."
+                    logger.debug("Listener tick: last_processed=%s", last_val)
+
                     await self._poll_once()
-                except Exception:  # noqa: BLE001
-                    logger.exception("listener tick failed; backing off")
-                # sleep, but wake promptly on stop
+
+                    # Reset backoff on successful poll
+                    if self._current_backoff > 0:
+                        logger.info("RPC connection restored.")
+                        self._current_backoff = 0.0
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    is_429 = False
+
+                    if isinstance(e, ClientResponseError) and e.status == 429:
+                        is_429 = True
+                    elif "429" in err_msg or "too many requests" in err_msg:
+                        is_429 = True
+
+                    if is_429:
+                        self._current_backoff = (
+                            self._current_backoff * 2 if self._current_backoff > 0
+                            else self._min_backoff
+                        )
+                        self._current_backoff = min(self._current_backoff, self._max_backoff)
+                        logger.warning(
+                            "RPC RATE LIMITED (429). Backing off for %.1f seconds. Total RPC calls: %d",
+                            self._current_backoff,
+                            self._provider.call_count
+                        )
+                    else:
+                        logger.exception("listener tick failed; backing off")
+
+                sleep_time = self._poll_interval + self._current_backoff
                 try:
                     await asyncio.wait_for(
-                        self._stop_event.wait(), timeout=self._poll_interval
+                        self._stop_event.wait(), timeout=sleep_time
                     )
                 except asyncio.TimeoutError:
                     pass
@@ -95,14 +139,17 @@ class BlockListener:
             raise
 
     async def _poll_once(self) -> None:
+        # 1. Get latest block
         latest = await self._provider.get_latest_block_number()
-        async with self._session_factory() as session:
-            last = await _load_checkpoint(session)
-        # Optional override: skip ahead if persisted checkpoint is below
-        # listener_start_block (configured in .env). Production should
-        # leave listener_start_block=0 so the listener always resumes
-        # from the last checkpoint. Smoke tests / backfills set this to
-        # a recent block so we don't try to walk the entire chain.
+
+        # 2. Load checkpoint if not already cached
+        if self._last_processed_block is None:
+            async with self._session_factory() as session:
+                self._last_processed_block = await _load_checkpoint(session)
+
+        last = self._last_processed_block
+
+        # Optional override
         start_override = get_settings().listener_start_block
         if start_override and last < start_override:
             logger.warning(
@@ -110,27 +157,55 @@ class BlockListener:
                 last, start_override,
             )
             last = start_override - 1
+
         if last >= latest:
+            # Log occasionally that we are caught up
+            logger.debug("Chain caught up (latest=%s, last=%s)", latest, last)
             return
-        # process gap sequentially
+
+        # --- FIX: Prevent catastrophic catch-up ---
+        MAX_CATCHUP_BLOCKS = 1000
+        if latest - last > MAX_CATCHUP_BLOCKS:
+            logger.warning(
+                "Large block gap detected: last=%s, latest=%s. "
+                "Skipping historical backlog and starting from latest.",
+                last, latest,
+            )
+            # Jump to the most recent block so we don't replay millions of blocks
+            last = latest - 1
+        # ------------------------------------------
+
+        logger.info("Gap detected: last=%s, latest=%s. Processing %s blocks.", last, latest, latest - last)
+
+        # 3. Process gap sequentially
         for n in range(last + 1, latest + 1):
             if self._stop_event.is_set():
                 return
             await self._process_block(n)
+            # IMPORTANT: Avoid hammering RPC during gap processing.
+            # Small delay between blocks to stay under rate limits.
+            await asyncio.sleep(0.1)
 
     async def _process_block(self, block_number: int) -> None:
         logger.info("[BLOCK] Processing block %s", block_number)
-        block = await self._provider.get_block(block_number)
-        # run callbacks
+        try:
+            block = await self._provider.get_block(block_number)
+        except Exception as e:
+            logger.error("Failed to fetch block %s: %s", block_number, e)
+            raise e
+
         for cb in self._callbacks:
             try:
                 await cb(block)
             except Exception:  # noqa: BLE001
                 logger.exception("on_block callback failed for %s", block_number)
-        # persist checkpoint AFTER callbacks succeed
+
         async with self._session_factory() as session:
             await _save_checkpoint(session, block["number"], block["hash"])
             await session.commit()
+            # Update in-memory cache
+            self._last_processed_block = block["number"]
+
         logger.debug(
             "processed block %s (tx=%d)", block["number"], len(block["transactions"])
         )

@@ -25,8 +25,8 @@ async def handle_token_task(provider: BlockchainProvider, block_data: dict) -> N
     # Process discovery
     await process_token_discovery(block_data, provider, AsyncSessionLocal)
 
-    # Schedule snapshots for newly confirmed tokens
-    # We query the DB for tokens detected in this block (approximately)
+    # Trigger IMMEDIATE risk analysis for newly confirmed tokens
+    # and schedule snapshots for the future.
     async with AsyncSessionLocal() as session:
         from app.database.models import Token
         from sqlalchemy import select
@@ -38,6 +38,14 @@ async def handle_token_task(provider: BlockchainProvider, block_data: dict) -> N
         )
         newly_confirmed = res.all()
         for addr, detected_at in newly_confirmed:
+            logger.info("TOKEN DETECTED: %s. Triggering immediate analysis.", addr)
+            try:
+                from app.services.risk_engine import risk_engine
+                await risk_engine.calculate_and_store_score(session, addr)
+                logger.info("ANALYSIS COMPLETE for token %s", addr)
+            except Exception as e:
+                logger.exception("Immediate analysis failed for %s: %s", addr, e)
+
             from app.services.snapshot_scheduler import SnapshotScheduler
             await SnapshotScheduler.schedule_snapshots(addr, detected_at)
 
@@ -75,9 +83,10 @@ async def handle_snapshot_task(provider: BlockchainProvider, data: dict) -> None
     if datetime.now(timezone.utc) < scheduled_at:
         # Not time yet - push back to queue
         # In a real system, we'd use a delayed queue or a scheduler.
-        # For now, we just push it back (though this might cause a tight loop).
-        # A better way would be to sleep or use a specialized Redis ZSET.
-        # But we'll keep it simple for now.
+        # For now, we just push it back. We add a small sleep to prevent
+        # a tight CPU-burning loop when many snapshots are queued early.
+        import asyncio
+        await asyncio.sleep(1)
         from app.queue import task_queue
         await task_queue.push("snapshots", "take_snapshot", data)
         return

@@ -141,7 +141,7 @@ async def process_token_discovery(
                     ts_cache[n] = ts
                 return ts
 
-            outcome, decoded = await _probe_one(provider, row, _internal_ts)
+            outcome, decoded = await _probe_one(provider, row.contract_address)
             if outcome is _PROBE_OK:
                 logger.info("[ERC20] Token detected: %s (%s)", decoded["symbol"], row.contract_address)
                 ts = await _safe_block_timestamp(row.creation_block)
@@ -203,10 +203,9 @@ _EMPTY_DECODED: dict = {
 
 async def _probe_one(
     provider: BlockchainProvider,
-    deployment: ContractDeployment,
-    block_timestamp_fn,
+    address: str,
 ) -> tuple[_Outcome, dict]:
-    """Probe a single deployment.
+    """Probe a single address.
 
     Returns ``(outcome, decoded)`` where:
       - ``outcome is _PROBE_OK`` and ``decoded`` has name/symbol/
@@ -222,28 +221,32 @@ async def _probe_one(
     and returns. The caller can thus probe a batch and have one
     transient failure not abort the entire tick.
     """
-    addr = deployment.contract_address
+    addr = address
     # name()
     try:
         name_raw = await provider.get_eth_call(addr, SELECTOR_NAME)
+        logger.info("name_raw for %s: %s", addr, name_raw.hex() if name_raw else "None")
     except Exception as e:  # noqa: BLE001
         outcome = _classify_probe_error(e)
         return outcome, dict(_EMPTY_DECODED)
     # symbol()
     try:
         symbol_raw = await provider.get_eth_call(addr, SELECTOR_SYMBOL)
+        logger.info("symbol_raw for %s: %s", addr, symbol_raw.hex() if symbol_raw else "None")
     except Exception as e:  # noqa: BLE001
         outcome = _classify_probe_error(e)
         return outcome, dict(_EMPTY_DECODED)
     # decimals()
     try:
         decimals_raw = await provider.get_eth_call(addr, SELECTOR_DECIMALS)
+        logger.info("decimals_raw for %s: %s", addr, decimals_raw.hex() if decimals_raw else "None")
     except Exception as e:  # noqa: BLE001
         outcome = _classify_probe_error(e)
         return outcome, dict(_EMPTY_DECODED)
     # totalSupply()
     try:
         total_supply_raw = await provider.get_eth_call(addr, SELECTOR_TOTAL_SUPPLY)
+        logger.info("totalSupply_raw for %s: %s", addr, total_supply_raw.hex() if total_supply_raw else "None")
     except Exception as e:  # noqa: BLE001
         outcome = _classify_probe_error(e)
         return outcome, dict(_EMPTY_DECODED)

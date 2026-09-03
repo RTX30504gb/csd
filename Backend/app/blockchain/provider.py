@@ -4,7 +4,9 @@ Phase 2 implements only HTTP RPC polling. A WebSocket provider can be
 added later (e.g. WebSocketBlockListener in app.blockchain.listener_websocket)
 without changing the listener or downstream consumers.
 """
+import asyncio
 from abc import ABC, abstractmethod
+
 
 from web3 import AsyncWeb3
 from web3.providers.rpc import AsyncHTTPProvider
@@ -119,21 +121,31 @@ class HttpRpcProvider(BlockchainProvider):
         self._rpc_url = rpc_url or settings.base_rpc_url
         self._chain_id = chain_id or settings.base_chain_id
         self._w3 = AsyncWeb3(AsyncHTTPProvider(self._rpc_url))
+        self._call_count = 0
         logger.info("[RPC] Connected to %s (chain_id=%s)", self._rpc_url, self._chain_id)
+
+    @property
+    def call_count(self) -> int:
+        """Return total number of RPC calls made by this provider."""
+        return self._call_count
 
     @property
     def chain_id(self) -> int:
         return self._chain_id
 
     async def get_latest_block_number(self) -> int:
+        self._call_count += 1
         # eth_blockNumber returns hex; AsyncWeb3 coerces to int.
-        return await self._w3.eth.block_number
+        return await asyncio.wait_for(self._w3.eth.block_number, timeout=10.0)
 
     async def get_block(self, block_number: int, full_transactions: bool = False) -> dict:
-        block = await self._w3.eth.get_block(
-            block_number, full_transactions=full_transactions
+        self._call_count += 1
+        block = await asyncio.wait_for(
+            self._w3.eth.get_block(block_number, full_transactions=full_transactions),
+            timeout=10.0,
         )
         if full_transactions:
+
             txs = [
                 {
                     "hash": tx["hash"].hex(),
@@ -155,7 +167,8 @@ class HttpRpcProvider(BlockchainProvider):
         }
 
     async def get_transaction_receipt(self, tx_hash: str) -> dict:
-        receipt = await self._w3.eth.get_transaction_receipt(tx_hash)
+        self._call_count += 1
+        receipt = await asyncio.wait_for(self._w3.eth.get_transaction_receipt(tx_hash), timeout=10.0)
         return {
             "transactionHash": receipt["transactionHash"].hex(),
             "blockNumber": int(receipt["blockNumber"]),
@@ -178,7 +191,10 @@ class HttpRpcProvider(BlockchainProvider):
             to_checksum = self._w3.to_checksum_address(to)
         except (ValueError, TypeError):
             to_checksum = to
-        result_hex = await self._w3.eth.call({"to": to_checksum, "data": data})
+        self._call_count += 1
+        result_hex = await asyncio.wait_for(
+            self._w3.eth.call({"to": to_checksum, "data": data}), timeout=10.0
+        )
         # AsyncWeb3 returns HexBytes; coerce to bytes so the detector
         # can ABI-decode without depending on web3 types.
         return bytes(result_hex)
@@ -188,5 +204,6 @@ class HttpRpcProvider(BlockchainProvider):
             addr_checksum = self._w3.to_checksum_address(address)
         except (ValueError, TypeError):
             addr_checksum = address
-        code = await self._w3.eth.get_code(addr_checksum)
+        self._call_count += 1
+        code = await asyncio.wait_for(self._w3.eth.get_code(addr_checksum), timeout=10.0)
         return bytes(code)

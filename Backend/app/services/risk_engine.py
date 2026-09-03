@@ -14,12 +14,25 @@ class RiskEngine:
 
     async def calculate_and_store_score(self, session: AsyncSession, token_address: str) -> RiskScore:
         """Compute a risk score using ML and store it in the database."""
+        logger.info("ANALYSIS STARTED for token %s", token_address)
+
         # 1. Perform ML Inference
-        ml_score = await ml_inference.predict_risk(session, token_address)
+        try:
+            ml_score = await ml_inference.predict_risk(session, token_address)
+            logger.info("ML ANALYSIS COMPLETE for token %s: score %f", token_address, ml_score)
+        except Exception as e:
+            logger.exception("ML analysis failed for token %s: %s", token_address, e)
+            ml_score = 0.0
 
         # 2. Mechanical Verification (Phase 20)
-        mech_data = await mechanical_verification.verify_mechanical_risk(session, token_address)
-        mech_score = mech_data["mechanical_risk_score"]
+        try:
+            mech_data = await mechanical_verification.verify_mechanical_risk(session, token_address)
+            mech_score = mech_data["mechanical_risk_score"]
+            logger.info("MECHANICAL ANALYSIS COMPLETE for token %s: score %f", token_address, mech_score)
+        except Exception as e:
+            logger.exception("Mechanical verification failed for token %s: %s", token_address, e)
+            mech_score = 0.0
+            mech_data = {"flags": {}}
 
         # Combine scores: Max of ML and Mechanical
         final_score = max(ml_score, mech_score)
@@ -28,7 +41,7 @@ class RiskEngine:
         level = self._determine_level(final_score)
 
         # 4. Generate reasons
-        reasons = self._generate_reasons(final_score, level, mech_data["flags"])
+        reasons = self._generate_reasons(final_score, level, mech_data.get("flags", {}))
 
         # 5. Store result
         risk_score = RiskScore(
@@ -42,6 +55,8 @@ class RiskEngine:
 
         session.add(risk_score)
         await session.commit()
+        logger.info("RISK SCORE SAVED for token %s: %d (%s)", token_address, risk_score.score, level)
+        logger.info("ANALYSIS COMPLETE for token %s", token_address)
 
         return risk_score
 

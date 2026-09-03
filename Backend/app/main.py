@@ -34,9 +34,11 @@ one ``eth_getLogs`` call per analyzed token. Adds
 ``/wallets/{address}``, ``/wallets/{address}/relationships``, and
 ``/tokens/{address}/wallets`` endpoints.
 """
+import logging
+from asyncio import gather
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from sqlalchemy import or_, select
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -56,20 +58,36 @@ from app.database.models import (
     TokenHolder,
     Wallet,
     WalletRelationship,
+    RiskScore,
 )
 from app.queue import wrap_as_queued_task
 from app.workers.manager import WorkerManager
 from app.services.ml_evaluator import ml_evaluator
+from app.services.on_demand_analysis import analyze_token_on_demand
+from app.discovery.contract_risk import process_contract_risk
+from app.discovery.holder_analysis import process_holder_analysis
+from app.discovery.liquidity import process_liquidity_discovery
+from app.services.risk_engine import risk_engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure logging for the app package
+    settings = get_settings()
+    logging.basicConfig(
+        level=settings.log_level if settings.log_level else "INFO",
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    logger = logging.getLogger("app")
+    logger.setLevel(settings.log_level if settings.log_level else "INFO")
+
     # ensure schema exists (Phase 2 only; Alembic in later phase)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     provider = HttpRpcProvider()
     listener = BlockListener(provider=provider, session_factory=AsyncSessionLocal)
+
 
     # Phase 16: Use queued tasks for asynchronous analysis.
     # We register a simple wrapper that pushes a task to Redis.
@@ -113,7 +131,7 @@ async def chain_info() -> dict:
     return {"chain_id": provider.chain_id, "latest_block": head}
 
 
-def _token_to_dict(t: Token, deployment: ContractDeployment | None = None) -> dict:
+def _token_to_dict(t: Token, deployment: ContractDeployment | None = None, risk: RiskScore | None = None) -> dict:
     """Shape one Token (+ optionally its underlying deployment) for JSON.
 
     Centralised so ``/tokens/recent`` and ``/tokens/{address}`` stay
@@ -149,6 +167,13 @@ def _token_to_dict(t: Token, deployment: ContractDeployment | None = None) -> di
                 deployment.erc20_checked_at.isoformat() if deployment.erc20_checked_at else None
             ),
         }
+    if risk is not None:
+        out["risk"] = {
+            "score": risk.score,
+            "level": risk.level,
+            "reasons": risk.reasons,
+            "computed_at": risk.computed_at.isoformat() if risk.computed_at else None,
+        }
     return out
 
 
@@ -166,10 +191,73 @@ async def tokens_recent(limit: int = 20) -> dict:
                 select(Token).order_by(Token.detected_at.desc()).limit(limit)
             )
         ).scalars().all()
+
+        tokens_out = []
+        for t in rows:
+            deployment = (
+                await session.execute(
+                    select(ContractDeployment).where(ContractDeployment.contract_address == t.contract_address)
+                )
+            ).scalars().first()
+
+            risk = (
+                await session.execute(
+                    select(RiskScore).where(RiskScore.token_address == t.contract_address)
+                    .order_by(RiskScore.computed_at.desc()).limit(1)
+                )
+            ).scalars().first()
+
+            tokens_out.append(_token_to_dict(t, deployment, risk))
+
     return {
         "count": len(rows),
-        "tokens": [_token_to_dict(t) for t in rows],
+        "tokens": tokens_out,
     }
+
+
+@app.post("/tokens/analyze")
+async def analyze_token(payload: dict = Body(...)) -> dict:
+    """On-demand analysis of a contract address on Base.
+
+    This endpoint allows querying a contract directly without waiting
+    for the block listener to discover it.
+    """
+    address = payload.get("contract_address")
+    if not address:
+        raise HTTPException(status_code=400, detail="Missing contract_address")
+
+    addr = address.strip().lower()
+    if not addr.startswith("0x") or len(addr) != 42:
+        raise HTTPException(status_code=400, detail=f"Invalid EVM address: {address}")
+
+    provider = HttpRpcProvider()
+    try:
+        result = await analyze_token_on_demand(
+            provider=provider,
+            session_factory=AsyncSessionLocal,
+            address=addr
+        )
+
+        if "error" in result:
+            # Map internal error types to HTTP statuses
+            err_type = result.get("type")
+            if err_type == "NOT_A_CONTRACT":
+                raise HTTPException(status_code=404, detail=result["error"])
+            if err_type == "NOT_ERC20":
+                raise HTTPException(status_code=400, detail=result["error"])
+            if err_type == "TIMEOUT":
+                raise HTTPException(status_code=504, detail=result["error"])
+            if err_type == "RPC_ERROR":
+                raise HTTPException(status_code=503, detail=result["error"])
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected failure during on-demand analysis: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error during analysis")
 
 
 @app.get("/tokens/{address}")

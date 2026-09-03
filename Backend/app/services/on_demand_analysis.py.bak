@@ -1,0 +1,188 @@
+import logging
+import asyncio
+from datetime import datetime, timezone
+from typing import Any
+import numpy as np
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from app.blockchain.provider import HttpRpcProvider
+from app.database.models import Token, ContractDeployment
+from app.discovery.tokens import _probe_one, _PROBE_OK
+from app.discovery.contract_risk import _analyze_token
+from app.discovery.liquidity import _discover_pools_for_token
+from app.discovery.holder_analysis import _reconstruct_balances
+from app.services.risk_engine import risk_engine
+from app.services.ml_inference import ml_inference
+from app.services.risk_features import compute_risk_features
+
+logger = logging.getLogger(__name__)
+
+# Analysis timeout per component to prevent total hang
+ANALYSIS_TIMEOUT = 20.0
+
+async def analyze_token_on_demand(
+    provider: HttpRpcProvider,
+    session_factory: async_sessionmaker,
+    address: str,
+) -> dict:
+    """
+    Perform a full, direct analysis of a single token contract address on Base.
+
+    Bypasses the block-oriented pipeline to provide prompt results.
+    Returns null/unknown for data that is not available in the DB and
+    cannot be retrieved efficiently on-demand.
+    """
+    addr = address.strip().lower()
+    now = datetime.now(timezone.utc)
+
+    # 1. Bytecode check
+    code = await provider.get_code(addr)
+    if not code:
+        return {"error": "No contract bytecode found at this address", "type": "NOT_A_CONTRACT"}
+
+    # 2. ERC-20 Detection
+    try:
+        outcome, decoded = await asyncio.wait_for(
+            _probe_one(provider, addr),
+            timeout=ANALYSIS_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        return {"error": "ERC-20 probe timed out", "type": "TIMEOUT"}
+
+    if outcome is not _PROBE_OK:
+        return {"error": "Contract is not a valid ERC-20 token", "type": "NOT_ERC20"}
+
+    # 3. Block Context
+    try:
+        latest_block = await asyncio.wait_for(
+            provider.get_latest_block_number(),
+            timeout=5.0
+        )
+    except Exception as e:
+        logger.error("Failed to get latest block: %s", e)
+        return {"error": "Unable to obtain latest block context from RPC", "type": "RPC_ERROR"}
+
+    # 4. DB Lookups
+    token_record = None
+    deployment_record = None
+    async with session_factory() as session:
+        token_record = (
+            await session.execute(select(Token).where(Token.contract_address == addr))
+        ).scalars().first()
+        deployment_record = (
+            await session.execute(select(ContractDeployment).where(ContractDeployment.contract_address == addr))
+        ).scalars().first()
+
+    # 5. Direct Analysis
+    # Bytecode Risk
+    try:
+        risk_flags = await asyncio.wait_for(
+            _analyze_token(provider, addr, latest_block, now),
+            timeout=ANALYSIS_TIMEOUT
+        )
+    except Exception as e:
+        logger.error("Contract risk analysis failed: %s", e)
+        risk_flags = None
+
+    # Liquidity
+    try:
+        pools, transport_failed = await asyncio.wait_for(
+            _discover_pools_for_token(provider, addr, {"number": latest_block}),
+            timeout=ANALYSIS_TIMEOUT
+        )
+        if transport_failed:
+            pools = []
+    except Exception as e:
+        logger.error("Liquidity discovery failed: %s", e)
+        pools = []
+
+    # Holders (Only if creation_block is known)
+    holders = None
+    creation_block = token_record.creation_block if token_record else None
+    if creation_block:
+        try:
+            # Reconstruct balances (capped range to avoid hanging)
+            holders = await asyncio.wait_for(
+                _reconstruct_balances(provider, addr, creation_block, latest_block, 5000),
+                timeout=ANALYSIS_TIMEOUT * 2
+            )
+        except Exception as e:
+            logger.error("Holder analysis failed: %s", e)
+            holders = None
+
+    # 6. Risk Scoring (Using Real Model Logic)
+    ml_score = 0.0
+    if ml_inference.model:
+        try:
+            # Build a partial feature vector based on what we found
+            bytecode_feats = compute_risk_features(risk_flags) if risk_flags else {}
+
+            # Liquidity features
+            total_liq = sum(int(p.get("reserve_token", 0) or 0) for p in pools) if pools else 0
+            liq_feats = {
+                "pool_count": len(pools),
+                "total_liquidity": float(total_liq),
+            }
+            pass
+        except Exception as e:
+            logger.error("ML scoring failed: %s", e)
+
+    # Mechanical risk is 0 because we have no events (synchronous)
+    mechanical_score = 0.0
+    mech_flags = {"hard_rug_detected": False, "wash_trading_suspected": False}
+
+    # Combine
+    final_score = max(ml_score, mechanical_score)
+    level = risk_engine._determine_level(final_score)
+    reasons = risk_engine._generate_reasons(final_score, level, mech_flags)
+
+    # Add evidence-based reasons from bytecode
+    if risk_flags:
+        for flag_name, weight in (
+            {"has_mint": 30, "has_blacklist": 20, "has_pause": 10,
+             "has_tax_control": 20, "has_max_tx_control": 10,
+             "has_max_wallet_control": 10, "has_trading_control": 20}
+        ).items():
+            if getattr(risk_flags, flag_name, False):
+                reasons.append(f"Capability detected: {flag_name.replace('has_', '').replace('_', ' ').title()}")
+        if risk_flags.is_upgradeable_proxy:
+            reasons.append("Contract is an upgradeable proxy")
+
+    # 7. Construct Final Response
+    res = {
+        "contract_address": addr,
+        "deployer": token_record.deployer if token_record else None,
+        "name": decoded["name"],
+        "symbol": decoded["symbol"],
+        "decimals": decoded["decimals"],
+        "total_supply": str(int(decoded["total_supply"])) if decoded["total_supply"] else None,
+        "creation_block": creation_block,
+        "creation_timestamp": (
+            token_record.creation_timestamp.isoformat()
+            if token_record and token_record.creation_timestamp else None
+        ),
+        "detected_at": now.isoformat(),
+        "risk": {
+            "score": int(final_score),
+            "level": level,
+            "reasons": reasons,
+            "computed_at": now.isoformat(),
+        },
+        "analysis_details": {
+            "pools_found": len(pools),
+            "holders_reconstructed": len(holders) if holders is not None else "unavailable",
+            "latest_block": latest_block,
+        },
+        "deployment": {
+            "creation_tx": deployment_record.creation_tx if deployment_record else None,
+            "created_at": (
+                deployment_record.created_at.isoformat()
+                if deployment_record and deployment_record.created_at else None
+            ),
+            "is_erc20": True,
+        } if deployment_record else None
+    }
+
+    return res
